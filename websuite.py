@@ -232,13 +232,19 @@ elif tool == "Experimental Block Designer":
         else:
             with st.spinner('Engaging R backend and calculating D-optimal matrix...'):
                 
-                # 1. Write the R script dynamically
+# 1. Write the R script dynamically
                 r_script = f"""
                 options(warn=-1)
-                # Auto-install the package if it's missing
+                
+                # Setup local user library to avoid permission errors on cloud servers
+                local_lib <- file.path(getwd(), "R_libs")
+                if (!dir.exists(local_lib)) dir.create(local_lib)
+                .libPaths(c(local_lib, .libPaths()))
+
+                # Auto-install the package locally if it's missing
                 if (!require("AlgDesign", quietly = TRUE)) {{
-                  install.packages("AlgDesign", repos="https://cloud.r-project.org", quiet=TRUE)
-                  library(AlgDesign)
+                  install.packages("AlgDesign", lib=local_lib, repos="https://cloud.r-project.org", quiet=TRUE)
+                  library(AlgDesign, lib.loc=local_lib)
                 }}
 
                 V <- {int(num_brands)}
