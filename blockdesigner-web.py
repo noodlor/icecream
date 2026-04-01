@@ -19,15 +19,15 @@ LANG = {
     "servings_per": "Samples evaluated per taster",
     "serving_error": "A taster cannot evaluate more samples than the total number of products available.",
 
-    "step_2_title": "Step 2: Define Your Products",
-    "step_2_desc": "How would you like to enter the items being tasted today?",
+    "step_2_title": "Step 2: Input Products",
+    "step_2_desc": "How would you like to enter the items being tasted?",
     "input_mode_label": "Product Entry Method",
     "mode_manual": "Type them in manually",
     "mode_csv": "Upload a master list (CSV)",
     "csv_help": "Upload a CSV containing your product names and blind codes.",
-    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain columns for the Product (e.g., A, B, C), the Code, and the Name. The headers are forgiving (e.g., just 'Code' is fine):\n\n| Product | Code | Real Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
-    "csv_error": "We couldn't read your CSV. Please make sure you have columns containing the words 'Product', 'Code', and 'Name'.",
-    "csv_duplicate_error": "Your CSV has duplicate codes. Every product needs a unique code.",
+    "csv_format_guide": "**Required CSV Format:**\n\nThe file must contain columns for the Product (e.g., A, B, C), the Code, and the Name. The headers are forgiving (e.g., just 'Code' is fine):\n\n| Product | Code | Real Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
+    "csv_error": "We couldn't read CSV. Please make sure it has columns containing the words 'Product', 'Code', and 'Name'.",
+    "csv_duplicate_error": "CSV has duplicate codes. Every product needs a unique code.",
     "manual_num_products": "Total number of products to test",
     "manual_enter_names_instruction": "Enter actual product names:",
     "manual_name_prefix": "Product",
@@ -96,7 +96,7 @@ def clean_3_digit_code(val):
 def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd, local_r_lib):
     # R script dynamically installs into the writable local directory
     r_script = f"""
-    options(warn=-1, repos=c(CRAN="https://cran.us.r-project.org"))
+    options(warn=-1, repos=c(CRAN="https://cloud.r-project.org"))
     dir.create("{local_r_lib}", showWarnings = FALSE, recursive = TRUE)
     {r_lib_cmd}
     
