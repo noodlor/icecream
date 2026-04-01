@@ -8,14 +8,13 @@ import re
 
 # ==========================================
 # CENTRALIZED TEXT CONFIGURATION
-# Edit these strings to change the app's language
 # ==========================================
 LANG = {
     "page_title": "Sensory Panel Designer",
     "page_subtitle": "Easily build fair, randomized serving designs for tasting panels. *(Powered by R's AlgDesign statistical package).* ",
     
     "step_1_title": "Step 1: Panel Logistics",
-    "step_1_desc": "Tell us about the tasters and how many samples they will evaluate.",
+    "step_1_desc": "Input the number of tasters and how many samples they will evaluate.",
     "num_tasters": "Expected number of tasters",
     "servings_per": "Samples evaluated per taster",
     "serving_error": "A taster cannot evaluate more samples than the total number of products available.",
@@ -58,7 +57,6 @@ LANG = {
 # ==========================================
 st.set_page_config(page_title=LANG["page_title"], page_icon="🍦", layout="centered")
 
-
 st.markdown("""
     <style>
         div[data-baseweb="input"] > div, 
@@ -94,9 +92,14 @@ def clean_3_digit_code(val):
     return val_str.upper()
 
 def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd):
+    # Added robust installation logic for AlgDesign to handle Streamlit Cloud
     r_script = f"""
-    options(warn=-1)
+    options(warn=-1, repos=c(CRAN="http://cran.us.r-project.org"))
     {r_lib_cmd}
+    
+    if (!requireNamespace("AlgDesign", quietly = TRUE)) {{
+        install.packages("AlgDesign")
+    }}
     library(AlgDesign)
 
     V <- {int(v_count)}
@@ -120,7 +123,7 @@ def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd):
     with open("generate_design.R", "w") as f:
         f.write(r_script)
 
-    subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=30)
+    subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=60)
     df_result = pd.read_csv("temp_design.csv")
     
     if os.path.exists("generate_design.R"):
@@ -142,11 +145,14 @@ st.subheader(LANG["step_1_title"])
 st.markdown(LANG["step_1_desc"])
 
 with st.container(border=True):
+    num_products_input = st.number_input(LANG["manual_num_products"], min_value=2, max_value=26, value=4, step=1)
+    
+    st.divider()
     col1, col2 = st.columns(2)
     with col1:
-        num_tasters = st.number_input(LANG["num_tasters"], min_value=1, value=21, step=1)
+        num_tasters = st.number_input(LANG["num_tasters"], min_value=1, value=30, step=1)
     with col2:
-        servings_per_taster = st.number_input(LANG["servings_per"], min_value=1, value=4, step=1)
+        servings_per_taster = st.number_input(LANG["servings_per"], min_value=1, value=min(4, int(num_products_input)), step=1)
 
 # --- STEP 2: DEFINE PRODUCTS ---
 st.subheader(LANG["step_2_title"])
@@ -160,7 +166,7 @@ with st.container(border=True):
     product_names = []
     assign_codes = True
     blind_codes_from_csv = []
-    num_products_val = 4 
+    num_products_val = int(num_products_input)
 
     if product_def_mode == LANG["mode_csv"]:
         st.info(LANG["csv_format_guide"])
@@ -168,24 +174,44 @@ with st.container(border=True):
         
         if uploaded_master is not None:
             try:
-                df_master = pd.read_csv(uploaded_master)
-                req_cols = ['Product', '3-Digit Code', 'Real Name']
-                if not all(col in df_master.columns for col in req_cols):
+                df_raw = pd.read_csv(uploaded_master)
+                
+                # Fuzzy matching for column headers
+                mapped_cols = {}
+                for c in df_raw.columns:
+                    norm = re.sub(r'[^a-z0-9]', '', c.lower())
+                    if 'code' in norm:
+                        mapped_cols['Code'] = c
+                    elif 'name' in norm or 'real' in norm:
+                        mapped_cols['Name'] = c
+                    elif 'product' in norm or 'id' in norm or 'letter' in norm:
+                        mapped_cols['Product'] = c
+
+                if 'Code' not in mapped_cols or 'Name' not in mapped_cols or 'Product' not in mapped_cols:
                     st.error(LANG["csv_error"])
                     df_master = None
                 else:
-                    st.dataframe(df_master, hide_index=True)
+                    # Rename to internal standard names to keep the logic clean
+                    df_master = df_raw.rename(columns={
+                        mapped_cols['Product']: 'Product',
+                        mapped_cols['Code']: '3-Digit Code',
+                        mapped_cols['Name']: 'Real Name'
+                    })
+                    
+                    st.dataframe(df_master[['Product', '3-Digit Code', 'Real Name']], hide_index=True)
                     product_names = df_master['Real Name'].astype(str).tolist()
                     blind_codes_from_csv = df_master['3-Digit Code'].apply(clean_3_digit_code).tolist()
+                    
                     num_products_val = len(df_master)
+                    if num_products_val != num_products_input:
+                        st.caption(f"*(Note: Overriding your 'Total products' selection from Step 1. We found {num_products_val} products in your CSV.)*")
                     assign_codes = False
+                    
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
                 df_master = None
 
     else:
-        num_products_val = st.number_input(LANG["manual_num_products"], min_value=2, max_value=26, value=4, step=1)
-        st.write("")
         st.markdown(f"**{LANG['manual_enter_names_instruction']}**")
         n_p = int(num_products_val)
         
@@ -266,13 +292,13 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
                 
                 table_data = []
                 for i, row in df_r.iterrows():
-                    block_row = {"Panelist ID": f"Panelist {str(i + 1).zfill(2)}"}
+                    block_row = {"Taster ID": f"Taster {str(i + 1).zfill(2)}"}
                     for j, val in enumerate(row.values):
                         product_idx = int(val) - 1
                         if blind_codes:
-                            block_row[f"Serving {j+1}"] = blind_codes[product_idx]
+                            block_row[f"Sample {j+1}"] = blind_codes[product_idx]
                         else:
-                            block_row[f"Serving {j+1}"] = clean_names[product_idx]
+                            block_row[f"Sample {j+1}"] = clean_names[product_idx]
                     table_data.append(block_row)
 
                 final_df = pd.DataFrame(table_data)
@@ -302,7 +328,7 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
                     st.caption(LANG["results_disclaimer_names"])
                 
                 csv_export = final_df.to_csv(index=False)
-                st.download_button(LANG["btn_download_sched"], data=csv_export, file_name="serving_design.csv", mime="text/csv")
+                st.download_button(LANG["btn_download_sched"], data=csv_export, file_name="tasting_design.csv", mime="text/csv")
 
                 if key_df is not None:
                     st.divider()
