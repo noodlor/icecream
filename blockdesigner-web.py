@@ -34,7 +34,7 @@ LANG = {
     "auto_code_checkbox": "Automatically generate random 3-digit blind codes",
     
     "step_3_title": "Step 3: Generate Design",
-    "btn_generate": "Generate Serving Design",
+    "btn_generate": "Generate Block Design",
     "loading_msg": "Initializing R environment and calculating D-optimal incomplete block design via the AlgDesign package...",
     "timeout_error": "The statistical engine timed out. The mathematical combination requested may not be optimally resolvable. Please adjust your panel size or serving counts.",
     "r_missing_error": "R is not installed or not found in the system PATH. Please ensure R is configured.",
@@ -126,7 +126,7 @@ def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd, local_r_lib)
     with open("generate_design.R", "w") as f:
         f.write(r_script)
 
-    subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=120)
+    subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=520)
     df_result = pd.read_csv("temp_design.csv")
     
     if os.path.exists("generate_design.R"):
