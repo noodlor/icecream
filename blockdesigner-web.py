@@ -25,7 +25,7 @@ LANG = {
     "mode_manual": "Type them in manually",
     "mode_csv": "Upload a master list (CSV)",
     "csv_help": "Upload a CSV containing your product names.",
-    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain a column for the Name. Columns for the Product (e.g., A, B, C) and Code are optional. We will generate them if missing!\n\n| Product | Code | Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
+    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain a column for the Name. Columns for the Product (e.g., A, B, C) and Code are optional. They will be auto-generated if not found.\n\n| Product | Code | Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
     "csv_error": "Couldn't read CSV. Please make sure it has a column containing the word 'Name'.",
     "csv_duplicate_error": "CSV has duplicate codes. Every product needs a unique code.",
     "csv_success_all": "Found {count} products with custom letters and blind codes.",
@@ -59,7 +59,7 @@ LANG = {
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(page_title=LANG["page_title"], layout="centered")
+st.set_page_config(page_title=LANG["page_title"], page_icon="🍦", layout="centered")
 
 st.markdown("""
     <style>
