@@ -24,14 +24,17 @@ LANG = {
     "input_mode_label": "Product Entry Method",
     "mode_manual": "Type them in manually",
     "mode_csv": "Upload a master list (CSV)",
-    "csv_help": "Upload a CSV containing your product names and blind codes.",
-    "csv_format_guide": "**Required CSV Format:**\n\nThe file must contain columns for the Product (e.g., A, B, C), the Code, and the Name. The headers are forgiving (e.g., just 'Code' is fine):\n\n| Product | Code | Real Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
-    "csv_error": "We couldn't read CSV. Please make sure it has columns containing the words 'Product', 'Code', and 'Name'.",
+    "csv_help": "Upload a CSV containing your product names.",
+    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain a column for the Name. Columns for the Product (e.g., A, B, C) and Code are optional. We will generate them if missing!\n\n| Product | Code | Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
+    "csv_error": "Couldn't read CSV. Please make sure it has a column containing the word 'Name'.",
     "csv_duplicate_error": "CSV has duplicate codes. Every product needs a unique code.",
+    "csv_success_all": "Found {count} products with custom letters and blind codes.",
+    "csv_info_no_code": "Found {count} products. No custom codes detected, so we will automatically generate 3-digit blind codes for you.",
+    "csv_info_only_names": "Found {count} products. We will automatically assign them letters (A, B, C...) and random 3-digit blind codes.",
     "manual_num_products": "Total number of products to test",
     "manual_enter_names_instruction": "Enter actual product names:",
     "manual_name_prefix": "Product",
-    "auto_code_checkbox": "Automatically generate random 3-digit blind codes",
+    "auto_code_checkbox": "Automatically generate unique 3-digit blind codes",
     
     "step_3_title": "Step 3: Generate Design",
     "btn_generate": "Generate Block Design",
@@ -40,6 +43,7 @@ LANG = {
     "r_missing_error": "R is not installed or not found in the system PATH. Please ensure R is configured.",
     "blank_name_error": "Please ensure all product names are filled in before continuing.",
     "duplicate_name_error": "Duplicate product names detected. Please ensure each product name is unique.",
+    "missing_selection_error": "Please select a Product Entry Method in Step 2 before generating the design.",
     
     "results_title": "Experimental Block Design",
     "results_stats_header": "Design Quality (D-Optimal Matrix):",
@@ -55,7 +59,7 @@ LANG = {
 # ==========================================
 # PAGE CONFIGURATION
 # ==========================================
-st.set_page_config(page_title=LANG["page_title"], page_icon="🍦", layout="centered")
+st.set_page_config(page_title=LANG["page_title"], layout="centered")
 
 st.markdown("""
     <style>
@@ -150,7 +154,7 @@ st.markdown(LANG["step_1_desc"])
 with st.container(border=True):
     col1, col2, col3 = st.columns(3)
     with col1:
-        num_products_input = st.number_input(LANG["manual_num_products"], min_value=2, max_value=26, value=4, step=1)
+        num_products_input = st.number_input(LANG["manual_num_products"], min_value=2, max_value=26, value=9, step=1)
     with col2:
         num_tasters = st.number_input(LANG["num_tasters"], min_value=1, value=21, step=1)
     with col3:
@@ -161,8 +165,13 @@ st.subheader(LANG["step_2_title"])
 st.markdown(LANG["step_2_desc"])
 
 with st.container(border=True):
-    product_def_mode = st.radio(LANG["input_mode_label"], [LANG["mode_manual"], LANG["mode_csv"]], horizontal=True)
-    st.divider()
+    # Radio button defaults to None, keeping the UI clean until a selection is made
+    product_def_mode = st.radio(
+        LANG["input_mode_label"], 
+        [LANG["mode_manual"], LANG["mode_csv"]], 
+        horizontal=True,
+        index=None
+    )
 
     df_master = None
     product_names = []
@@ -170,9 +179,12 @@ with st.container(border=True):
     blind_codes_from_csv = []
     num_products_val = int(num_products_input)
 
+    if product_def_mode is not None:
+        st.divider()
+
     if product_def_mode == LANG["mode_csv"]:
-        st.info(LANG["csv_format_guide"])
-        uploaded_master = st.file_uploader(LANG["mode_csv"], type=["csv"], help=LANG["csv_help"])
+        st.markdown(LANG["csv_format_guide"])
+        uploaded_master = st.file_uploader(LANG["mode_csv"], type=["csv"], help=LANG["csv_help"], label_visibility="collapsed")
         
         if uploaded_master is not None:
             try:
@@ -189,31 +201,62 @@ with st.container(border=True):
                     elif 'product' in norm or 'id' in norm or 'letter' in norm:
                         mapped_cols['Product'] = c
 
-                if 'Code' not in mapped_cols or 'Name' not in mapped_cols or 'Product' not in mapped_cols:
+                if 'Name' not in mapped_cols:
                     st.error(LANG["csv_error"])
                     df_master = None
                 else:
-                    # Rename to internal standard names to keep the logic clean
-                    df_master = df_raw.rename(columns={
-                        mapped_cols['Product']: 'Product',
-                        mapped_cols['Code']: '3-Digit Code',
-                        mapped_cols['Name']: 'Real Name'
+                    num_prods = len(df_raw)
+                    
+                    # 1. Extract or Generate Real Names
+                    real_names = df_raw[mapped_cols['Name']].astype(str).tolist()
+                    
+                    # 2. Extract or Generate Product Letters
+                    if 'Product' in mapped_cols:
+                        product_letters = df_raw[mapped_cols['Product']].astype(str).tolist()
+                        has_products = True
+                    else:
+                        product_letters = [chr(65+i) for i in range(num_prods)]
+                        has_products = False
+                        
+                    # 3. Extract or Generate 3-Digit Codes
+                    if 'Code' in mapped_cols:
+                        blind_codes = df_raw[mapped_cols['Code']].apply(clean_3_digit_code).tolist()
+                        has_codes = True
+                    else:
+                        blind_codes = [str(x).zfill(3) for x in random.sample(range(100, 1000), num_prods)]
+                        has_codes = False
+
+                    # Display Smart Feedback Messages
+                    if has_products and has_codes:
+                        st.success(LANG["csv_success_all"].format(count=num_prods))
+                    elif has_products and not has_codes:
+                        st.info(LANG["csv_info_no_code"].format(count=num_prods))
+                    else:
+                        st.info(LANG["csv_info_only_names"].format(count=num_prods))
+
+                    # Build the standardized master dataframe
+                    df_master = pd.DataFrame({
+                        'Product': product_letters,
+                        'Code': blind_codes,
+                        'Name': real_names
                     })
                     
-                    st.dataframe(df_master[['Product', '3-Digit Code', 'Real Name']], hide_index=True)
-                    product_names = df_master['Real Name'].astype(str).tolist()
-                    blind_codes_from_csv = df_master['3-Digit Code'].apply(clean_3_digit_code).tolist()
+                    st.dataframe(df_master, hide_index=True)
                     
-                    num_products_val = len(df_master)
+                    # Pass values downstream
+                    product_names = real_names
+                    blind_codes_from_csv = blind_codes
+                    num_products_val = num_prods
+                    assign_codes = False # We already generated codes in the block above if needed
+                    
                     if num_products_val != num_products_input:
                         st.caption(f"*(Note: Overriding your 'Total products' selection from Step 1. We found {num_products_val} products in your CSV.)*")
-                    assign_codes = False
                     
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
                 df_master = None
 
-    else:
+    elif product_def_mode == LANG["mode_manual"]:
         st.markdown(f"**{LANG['manual_enter_names_instruction']}**")
         n_p = int(num_products_val)
         
@@ -234,117 +277,121 @@ with st.container(border=True):
 st.subheader(LANG["step_3_title"])
 
 if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
-    clean_names = [p.strip() for p in product_names]
-    
-    if product_def_mode == LANG["mode_csv"] and df_master is None:
-        st.error(LANG["csv_error"])
-    elif "" in clean_names:
-        st.error(LANG["blank_name_error"])
-    elif len(set(clean_names)) < len(clean_names):
-        st.error(LANG["duplicate_name_error"])
-    elif servings_per_taster > num_products_val:
-        st.error(LANG["serving_error"])
-    elif product_def_mode == LANG["mode_csv"] and len(set(blind_codes_from_csv)) < len(blind_codes_from_csv):
-        st.error(LANG["csv_duplicate_error"])
+    if product_def_mode is None:
+        st.error(LANG["missing_selection_error"])
     else:
-        with st.spinner(LANG["loading_msg"]):
-            try:
-                # 1. Generate Matrix
-                df_r = generate_d_optimal_matrix(num_products_val, num_tasters, servings_per_taster, R_LIB_CMD, LOCAL_R_LIB)
-                
-                # 2. Pre-shuffle rows to protect against dropouts
-                df_r = df_r.sample(frac=1).reset_index(drop=True)
-                
-                # 3. Calculate statistics
-                expected_count = (num_tasters * servings_per_taster) / num_products_val
-                expected_pairs = (expected_count * (servings_per_taster - 1)) / (num_products_val - 1) if num_products_val > 1 else 0
-                
-                counts = [0] * num_products_val
-                pairs = [[0] * num_products_val for _ in range(num_products_val)]
-
-                for idx, row in df_r.iterrows():
-                    block = [int(x) - 1 for x in row.values]
-                    for i in range(len(block)):
-                        counts[block[i]] += 1
-                        for j in range(i + 1, len(block)):
-                            pairs[block[i]][block[j]] += 1
-                            pairs[block[j]][block[i]] += 1
-
-                actual_min_count = min(counts)
-                actual_max_count = max(counts)
-                
-                actual_pair_counts = []
-                for i in range(num_products_val):
-                    for j in range(i + 1, num_products_val):
-                        actual_pair_counts.append(pairs[i][j])
-                
-                actual_min_pairs = min(actual_pair_counts) if actual_pair_counts else 0
-                actual_max_pairs = max(actual_pair_counts) if actual_pair_counts else 0
-
-                count_text = f"Exactly {actual_min_count}" if actual_min_count == actual_max_count else f"Between {actual_min_count} and {actual_max_count}"
-                pair_text = f"Exactly {actual_min_pairs}" if actual_min_pairs == actual_max_pairs else f"Between {actual_min_pairs} and {actual_max_pairs}"
-
-                # 4. Apply Codes
-                if product_def_mode == LANG["mode_manual"] and assign_codes:
-                    blind_codes = [str(x).zfill(3) for x in random.sample(range(100, 1000), num_products_val)]
-                elif product_def_mode == LANG["mode_csv"]:
-                    blind_codes = blind_codes_from_csv
-                else:
-                    blind_codes = None
-                
-                table_data = []
-                for i, row in df_r.iterrows():
-                    block_row = {"Taster ID": f"Taster {str(i + 1).zfill(2)}"}
-                    for j, val in enumerate(row.values):
-                        product_idx = int(val) - 1
-                        if blind_codes:
-                            block_row[f"Sample {j+1}"] = blind_codes[product_idx]
-                        else:
-                            block_row[f"Sample {j+1}"] = clean_names[product_idx]
-                    table_data.append(block_row)
-
-                final_df = pd.DataFrame(table_data)
-
-                if blind_codes:
-                    key_df = pd.DataFrame({
-                        "Product Name": clean_names,
-                        "3-Digit Code": blind_codes
-                    })
-                else:
-                    key_df = None
-
-                # --- DISPLAY RESULTS ---
-                st.divider()
-                st.subheader(LANG["results_title"])
-                st.markdown(f"""
-                **{LANG["results_stats_header"]}**
-                * Target appearances per product: {count_text} (Theoretical optimal: {expected_count:.2f})
-                * Pairwise balance (products served together): {pair_text} (Theoretical optimal: {expected_pairs:.2f})
-                """)
-                
-                st.dataframe(final_df, hide_index=True)
-                
-                if key_df is not None:
-                    st.caption(LANG["results_disclaimer_codes"])
-                else:
-                    st.caption(LANG["results_disclaimer_names"])
-                
-                csv_export = final_df.to_csv(index=False)
-                st.download_button(LANG["btn_download_sched"], data=csv_export, file_name="tasting_design.csv", mime="text/csv")
-
-                if key_df is not None:
-                    st.divider()
-                    st.subheader(LANG["key_title"])
-                    st.markdown(LANG["key_desc"])
-                    st.dataframe(key_df, hide_index=True)
+        clean_names = [p.strip() for p in product_names]
+        
+        if product_def_mode == LANG["mode_csv"] and df_master is None:
+            st.error(LANG["csv_error"])
+        elif "" in clean_names:
+            st.error(LANG["blank_name_error"])
+        elif len(set(clean_names)) < len(clean_names):
+            st.error(LANG["duplicate_name_error"])
+        elif servings_per_taster > num_products_val:
+            st.error(LANG["serving_error"])
+        elif product_def_mode == LANG["mode_csv"] and len(set(blind_codes_from_csv)) < len(blind_codes_from_csv):
+            st.error(LANG["csv_duplicate_error"])
+        else:
+            with st.spinner(LANG["loading_msg"]):
+                try:
+                    # 1. Generate Matrix
+                    df_r = generate_d_optimal_matrix(num_products_val, num_tasters, servings_per_taster, R_LIB_CMD, LOCAL_R_LIB)
                     
-                    master_key_csv = key_df.to_csv(index=False)
-                    st.download_button(LANG["btn_download_key"], data=master_key_csv, file_name="master_key.csv", mime="text/csv")
+                    # 2. Pre-shuffle rows to protect against dropouts
+                    df_r = df_r.sample(frac=1).reset_index(drop=True)
+                    
+                    # 3. Calculate statistics
+                    expected_count = (num_tasters * servings_per_taster) / num_products_val
+                    expected_pairs = (expected_count * (servings_per_taster - 1)) / (num_products_val - 1) if num_products_val > 1 else 0
+                    
+                    counts = [0] * num_products_val
+                    pairs = [[0] * num_products_val for _ in range(num_products_val)]
 
-            except subprocess.TimeoutExpired:
-                st.error(LANG["timeout_error"])
-            except FileNotFoundError:
-                st.error(LANG["r_missing_error"])
-            except subprocess.CalledProcessError as e:
-                st.error("An error occurred while executing the statistical engine.")
-                st.code(e.stderr)
+                    for idx, row in df_r.iterrows():
+                        block = [int(x) - 1 for x in row.values]
+                        for i in range(len(block)):
+                            counts[block[i]] += 1
+                            for j in range(i + 1, len(block)):
+                                pairs[block[i]][block[j]] += 1
+                                pairs[block[j]][block[i]] += 1
+
+                    actual_min_count = min(counts)
+                    actual_max_count = max(counts)
+                    
+                    actual_pair_counts = []
+                    for i in range(num_products_val):
+                        for j in range(i + 1, num_products_val):
+                            actual_pair_counts.append(pairs[i][j])
+                    
+                    actual_min_pairs = min(actual_pair_counts) if actual_pair_counts else 0
+                    actual_max_pairs = max(actual_pair_counts) if actual_pair_counts else 0
+
+                    count_text = f"exactly {actual_min_count}" if actual_min_count == actual_max_count else f"between {actual_min_count} and {actual_max_count}"
+                    pair_text = f"exactly {actual_min_pairs}" if actual_min_pairs == actual_max_pairs else f"between {actual_min_pairs} and {actual_max_pairs}"
+
+                    # 4. Apply Codes
+                    if product_def_mode == LANG["mode_manual"] and assign_codes:
+                        blind_codes = [str(x).zfill(3) for x in random.sample(range(100, 1000), num_products_val)]
+                    elif product_def_mode == LANG["mode_csv"]:
+                        blind_codes = blind_codes_from_csv
+                    else:
+                        blind_codes = None
+                    
+                    table_data = []
+                    for i, row in df_r.iterrows():
+                        block_row = {"Taster ID": f"Taster {str(i + 1).zfill(2)}"}
+                        for j, val in enumerate(row.values):
+                            product_idx = int(val) - 1
+                            if blind_codes:
+                                block_row[f"Sample {j+1}"] = blind_codes[product_idx]
+                            else:
+                                block_row[f"Sample {j+1}"] = clean_names[product_idx]
+                        table_data.append(block_row)
+
+                    final_df = pd.DataFrame(table_data)
+
+                    if blind_codes:
+                        key_df = pd.DataFrame({
+                            "Product Name": clean_names,
+                            "3-Digit Code": blind_codes
+                        })
+                    else:
+                        key_df = None
+
+                    # --- DISPLAY RESULTS ---
+                    st.divider()
+                    st.subheader(LANG["results_title"])
+                    st.markdown(f"""
+                    **{LANG["results_stats_header"]}**
+                    * **Target appearances:** Each product is served {count_text} times across the entire panel (Theoretical target: {expected_count:.2f}).
+                    * **Pairwise balance:** Every product is evaluated alongside every other product {pair_text} times (Theoretical target: {expected_pairs:.2f}).
+
+                    """)
+                    
+                    st.dataframe(final_df, hide_index=True)
+                    
+                    if key_df is not None:
+                        st.caption(LANG["results_disclaimer_codes"])
+                    else:
+                        st.caption(LANG["results_disclaimer_names"])
+                    
+                    csv_export = final_df.to_csv(index=False)
+                    st.download_button(LANG["btn_download_sched"], data=csv_export, file_name="tasting_design.csv", mime="text/csv")
+
+                    if key_df is not None:
+                        st.divider()
+                        st.subheader(LANG["key_title"])
+                        st.markdown(LANG["key_desc"])
+                        st.dataframe(key_df, hide_index=True)
+                        
+                        master_key_csv = key_df.to_csv(index=False)
+                        st.download_button(LANG["btn_download_key"], data=master_key_csv, file_name="master_key.csv", mime="text/csv")
+
+                except subprocess.TimeoutExpired:
+                    st.error(LANG["timeout_error"])
+                except FileNotFoundError:
+                    st.error(LANG["r_missing_error"])
+                except subprocess.CalledProcessError as e:
+                    st.error("An error occurred while executing the statistical engine.")
+                    st.code(e.stderr)
