@@ -25,9 +25,9 @@ LANG = {
     "mode_manual": "Type them in manually",
     "mode_csv": "Upload a master list (CSV)",
     "csv_help": "Upload a CSV containing your product names and blind codes.",
-    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain exactly these three column headers (case-sensitive):\n\n| Product | 3-Digit Code | Real Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
-    "csv_error": "We couldn't read your CSV. Please make sure the headers are spelled exactly: Product, 3-Digit Code, Real Name.",
-    "csv_duplicate_error": "Your CSV has duplicate 3-digit codes. Every product needs a unique code.",
+    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain columns for the Product (e.g., A, B, C), the Code, and the Name. The headers are forgiving (e.g., just 'Code' is fine):\n\n| Product | Code | Real Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
+    "csv_error": "We couldn't read your CSV. Please make sure you have columns containing the words 'Product', 'Code', and 'Name'.",
+    "csv_duplicate_error": "Your CSV has duplicate codes. Every product needs a unique code.",
     "manual_num_products": "Total number of products to test",
     "manual_enter_names_instruction": "Enter actual product names:",
     "manual_name_prefix": "Product",
@@ -48,7 +48,7 @@ LANG = {
     "btn_download_sched": "Download Design (CSV)",
     
     "key_title": "Master Key",
-    "key_desc": "Save this key to translate 3-digit codes back to real product names after the tasting.",
+    "key_desc": "Save this key to translate codes back to real product names after the tasting.",
     "btn_download_key": "Download Master Key (CSV)"
 }
 
@@ -75,8 +75,10 @@ st.markdown("""
 # ==========================================
 # DYNAMIC R ENVIRONMENT SETUP
 # ==========================================
-LOCAL_R_PATH = "/home/eater/R/x86_64-pc-linux-gnu-library/4.2"
-R_LIB_CMD = f'.libPaths(c("{LOCAL_R_PATH}", .libPaths()))\n' if os.path.exists(LOCAL_R_PATH) else ''
+# Create a local, writable directory for R packages to prevent permission errors on Streamlit Cloud
+LOCAL_R_LIB = os.path.join(os.getcwd(), "r_packages")
+os.makedirs(LOCAL_R_LIB, exist_ok=True)
+R_LIB_CMD = f'.libPaths(c("{LOCAL_R_LIB}", .libPaths()))\n'
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -91,16 +93,17 @@ def clean_3_digit_code(val):
         return val_str.zfill(3)
     return val_str.upper()
 
-def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd):
-    # Added robust installation logic for AlgDesign to handle Streamlit Cloud
+def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd, local_r_lib):
+    # R script dynamically installs into the writable local directory
     r_script = f"""
     options(warn=-1, repos=c(CRAN="http://cran.us.r-project.org"))
+    dir.create("{local_r_lib}", showWarnings = FALSE, recursive = TRUE)
     {r_lib_cmd}
     
     if (!requireNamespace("AlgDesign", quietly = TRUE)) {{
-        install.packages("AlgDesign")
+        install.packages("AlgDesign", lib="{local_r_lib}")
     }}
-    library(AlgDesign)
+    library(AlgDesign, lib.loc="{local_r_lib}")
 
     V <- {int(v_count)}
     B <- {int(b_count)}
@@ -123,7 +126,7 @@ def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd):
     with open("generate_design.R", "w") as f:
         f.write(r_script)
 
-    subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=60)
+    subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=120)
     df_result = pd.read_csv("temp_design.csv")
     
     if os.path.exists("generate_design.R"):
@@ -145,13 +148,12 @@ st.subheader(LANG["step_1_title"])
 st.markdown(LANG["step_1_desc"])
 
 with st.container(border=True):
-    num_products_input = st.number_input(LANG["manual_num_products"], min_value=2, max_value=26, value=4, step=1)
-    
-    st.divider()
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
-        num_tasters = st.number_input(LANG["num_tasters"], min_value=1, value=30, step=1)
+        num_products_input = st.number_input(LANG["manual_num_products"], min_value=2, max_value=26, value=4, step=1)
     with col2:
+        num_tasters = st.number_input(LANG["num_tasters"], min_value=1, value=21, step=1)
+    with col3:
         servings_per_taster = st.number_input(LANG["servings_per"], min_value=1, value=min(4, int(num_products_input)), step=1)
 
 # --- STEP 2: DEFINE PRODUCTS ---
@@ -248,7 +250,7 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
         with st.spinner(LANG["loading_msg"]):
             try:
                 # 1. Generate Matrix
-                df_r = generate_d_optimal_matrix(num_products_val, num_tasters, servings_per_taster, R_LIB_CMD)
+                df_r = generate_d_optimal_matrix(num_products_val, num_tasters, servings_per_taster, R_LIB_CMD, LOCAL_R_LIB)
                 
                 # 2. Pre-shuffle rows to protect against dropouts
                 df_r = df_r.sample(frac=1).reset_index(drop=True)
