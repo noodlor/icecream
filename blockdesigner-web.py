@@ -96,7 +96,7 @@ def clean_3_digit_code(val):
 def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd, local_r_lib):
     # R script dynamically installs into the writable local directory
     r_script = f"""
-    options(warn=-1, repos=c(CRAN="http://cran.us.r-project.org"))
+    options(warn=-1, repos=c(CRAN="https://cran.us.r-project.org"))
     dir.create("{local_r_lib}", showWarnings = FALSE, recursive = TRUE)
     {r_lib_cmd}
     
