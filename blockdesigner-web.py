@@ -7,6 +7,20 @@ import random
 import re
 
 # ==========================================
+# FEATURE FLAGS & THRESHOLDS
+# Toggle these to True/False to turn UI features on or off
+# ==========================================
+FEATURES = {
+    "show_detectable_difference": True,
+    "show_fatigue_warning": True,
+    "fatigue_moderate_threshold": 5,
+    "fatigue_high_threshold": 7,
+    "color_safe": "transparent",
+    "color_warning": "#fef08a", # Sleek pastel yellow
+    "color_risky": "#fbcfe8"    # Sleek pastel pink
+}
+
+# ==========================================
 # CENTRALIZED TEXT CONFIGURATION
 # ==========================================
 LANG = {
@@ -18,14 +32,15 @@ LANG = {
     "num_tasters": "Expected number of tasters",
     "servings_per": "Samples evaluated per taster",
     "serving_error": "A taster cannot evaluate more samples than the total number of products available.",
+    "detectable_diff_caption": "Based on these parameters, your panel will be able to reliably detect a quality difference of **{delta:.1f} points** (on a 9-point scale) between any two products.",
 
     "step_2_title": "Step 2: Input Products",
     "step_2_desc": "How would you like to enter the items being tasted?",
     "input_mode_label": "Product Entry Method",
     "mode_manual": "Type them in manually",
     "mode_csv": "Upload a master list (CSV)",
-    "csv_help": "Upload a CSV containing your product names.",
-    "csv_format_guide": "**Required CSV Format:**\n\nYour file must contain a column for the Name. Columns for the Product (e.g., A, B, C) and Code are optional. They will be auto-generated if not found.\n\n| Product | Code | Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
+    "csv_help": "Upload a CSV containing product names.",
+    "csv_format_guide": "**Required CSV Format:**\n\nFile must contain a column for the Name. Columns for the Product (e.g., A, B, C) and Code are optional. They will be auto-generated if not found.\n\n| Product | Code | Name |\n| :--- | :--- | :--- |\n| A | 492 | Brand X Vanilla |\n| B | 184 | Brand Y Vanilla |",
     "csv_error": "Couldn't read CSV. Please make sure it has a column containing the word 'Name'.",
     "csv_duplicate_error": "CSV has duplicate codes. Every product needs a unique code.",
     "csv_success_all": "Found {count} products with custom letters and blind codes.",
@@ -47,12 +62,12 @@ LANG = {
     
     "results_title": "Experimental Block Design",
     "results_stats_header": "Design Quality (D-Optimal Matrix):",
-    "results_disclaimer_codes": "Note: Only the blind codes are shown below to prevent bias.",
+    "results_disclaimer_codes": "Note: Only the blind codes are shown to prevent bias.",
     "results_disclaimer_names": "Note: Product names are shown below.",
     "btn_download_sched": "Download Design (CSV)",
     
-    "key_title": "Master Key",
-    "key_desc": "Save this key to translate codes back to real product names after the tasting.",
+    "key_title": "Master Key & Prep Sheet",
+    "key_desc": "Save this key to translate codes back to real product names after the tasting, and use the 'Total Servings' column to prepare the exact number of samples needed.",
     "btn_download_key": "Download Master Key (CSV)"
 }
 
@@ -160,6 +175,38 @@ with st.container(border=True):
     with col3:
         servings_per_taster = st.number_input(LANG["servings_per"], min_value=1, value=min(4, int(num_products_input)), step=1)
 
+    # Live Detectable Difference Calculation
+    if FEATURES["show_detectable_difference"]:
+        evals_per_product = (num_tasters * servings_per_taster) / num_products_input
+        if evals_per_product > 0:
+            z_alpha = 1.960
+            z_beta = 0.842
+            sigma = 1.3
+            delta = (z_alpha + z_beta) * sigma * np.sqrt(2 / evals_per_product)
+            st.caption(LANG["detectable_diff_caption"].format(delta=delta))
+
+    # Dynamic Fatigue Ribbon Footer
+    if FEATURES["show_fatigue_warning"]:
+        if servings_per_taster >= FEATURES["fatigue_high_threshold"]:
+            ribbon_color = FEATURES["color_risky"]
+            ribbon_text = "<strong>High Fatigue Risk:</strong> Tasting this many samples will dull palates."
+        elif servings_per_taster >= FEATURES["fatigue_moderate_threshold"]:
+            ribbon_color = FEATURES["color_warning"]
+            ribbon_text = "<strong>Moderate Fatigue Risk:</strong> Ensure tasters use palate cleansers between samples."
+        else:
+            ribbon_color = FEATURES["color_safe"]
+            ribbon_text = ""
+            
+        if ribbon_color != "transparent":
+            st.markdown(f"""
+                <div style="margin-top: 8px; margin-bottom: 8px; padding: 6px 12px; border-radius: 4px; background-color: {ribbon_color}; color: #453000; font-size: 0.85em; font-weight: 500;">
+                    {ribbon_text}
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            # When safe, just render a tiny 2px spacer with the same margins to keep layout consistent
+            st.markdown(f'<div style="height: 2px; margin-top: 8px; margin-bottom: 8px; background-color: {ribbon_color};"></div>', unsafe_allow_html=True)
+
 # --- STEP 2: DEFINE PRODUCTS ---
 st.subheader(LANG["step_2_title"])
 st.markdown(LANG["step_2_desc"])
@@ -183,7 +230,7 @@ with st.container(border=True):
         st.divider()
 
     if product_def_mode == LANG["mode_csv"]:
-        st.markdown(LANG["csv_format_guide"])
+        st.info(LANG["csv_format_guide"])
         uploaded_master = st.file_uploader(LANG["mode_csv"], type=["csv"], help=LANG["csv_help"], label_visibility="collapsed")
         
         if uploaded_master is not None:
@@ -250,7 +297,7 @@ with st.container(border=True):
                     assign_codes = False # We already generated codes in the block above if needed
                     
                     if num_products_val != num_products_input:
-                        st.caption(f"*(Note: Overriding your 'Total products' selection from Step 1. We found {num_products_val} products in your CSV.)*")
+                        st.caption(f"*(Note: Overriding 'Total products' selection from Step 1. {num_products_val} products found in the CSV.)*")
                     
             except Exception as e:
                 st.error(f"Error reading CSV: {e}")
@@ -351,13 +398,18 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
 
                     final_df = pd.DataFrame(table_data)
 
+                    # Generate the Master Key & Prep Sheet Tally
                     if blind_codes:
                         key_df = pd.DataFrame({
                             "Product Name": clean_names,
-                            "3-Digit Code": blind_codes
+                            "3-Digit Code": blind_codes,
+                            "Total Servings": counts
                         })
                     else:
-                        key_df = None
+                        key_df = pd.DataFrame({
+                            "Product Name": clean_names,
+                            "Total Servings": counts
+                        })
 
                     # --- DISPLAY RESULTS ---
                     st.divider()
@@ -371,7 +423,7 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
                     
                     st.dataframe(final_df, hide_index=True)
                     
-                    if key_df is not None:
+                    if blind_codes:
                         st.caption(LANG["results_disclaimer_codes"])
                     else:
                         st.caption(LANG["results_disclaimer_names"])
@@ -379,14 +431,13 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
                     csv_export = final_df.to_csv(index=False)
                     st.download_button(LANG["btn_download_sched"], data=csv_export, file_name="tasting_design.csv", mime="text/csv")
 
-                    if key_df is not None:
-                        st.divider()
-                        st.subheader(LANG["key_title"])
-                        st.markdown(LANG["key_desc"])
-                        st.dataframe(key_df, hide_index=True)
-                        
-                        master_key_csv = key_df.to_csv(index=False)
-                        st.download_button(LANG["btn_download_key"], data=master_key_csv, file_name="master_key.csv", mime="text/csv")
+                    st.divider()
+                    st.subheader(LANG["key_title"])
+                    st.markdown(LANG["key_desc"])
+                    st.dataframe(key_df, hide_index=True)
+                    
+                    master_key_csv = key_df.to_csv(index=False)
+                    st.download_button(LANG["btn_download_key"], data=master_key_csv, file_name="master_key_prep_sheet.csv", mime="text/csv")
 
                 except subprocess.TimeoutExpired:
                     st.error(LANG["timeout_error"])
