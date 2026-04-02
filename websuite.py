@@ -1020,14 +1020,24 @@ elif tool == "Survey Decoder":
                 key_up = st.file_uploader("Upload the master_key.csv exported from the Block Designer:", type=["csv"])
                 if key_up:
                     try:
-                        kdf = pd.read_csv(key_up)
-                        if "Code" not in kdf.columns or "Product Name" not in kdf.columns:
-                            st.error("Invalid file format. The file must contain exactly 'Code' and 'Product Name' columns.")
+                        kdf_raw = pd.read_csv(key_up)
+                        
+                        # Fuzzy matching for column headers
+                        mapped_cols = {}
+                        for c in kdf_raw.columns:
+                            norm = re.sub(r'[^a-z0-9]', '', c.lower())
+                            if 'code' in norm:
+                                mapped_cols['Code'] = c
+                            elif 'name' in norm or 'real' in norm or 'product' in norm:
+                                mapped_cols['Name'] = c
+                                
+                        if 'Code' not in mapped_cols or 'Name' not in mapped_cols:
+                            st.error("Invalid file format. We couldn't find columns containing the words 'Code' and 'Name' or 'Product'.")
                         else:
                             imported_dict = {}
-                            for _, r in kdf.iterrows():
-                                c = clean_3_digit_code(r["Code"])
-                                imported_dict[c] = str(r["Product Name"])
+                            for _, r in kdf_raw.iterrows():
+                                c = clean_3_digit_code(r[mapped_cols['Code']])
+                                imported_dict[c] = str(r[mapped_cols['Name']])
                             
                             missing_in_key = set(unique_codes) - set(imported_dict.keys())
                             

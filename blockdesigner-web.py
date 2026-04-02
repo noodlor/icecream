@@ -32,7 +32,7 @@ LANG = {
     "num_tasters": "Expected number of tasters",
     "servings_per": "Samples evaluated per taster",
     "serving_error": "A taster cannot evaluate more samples than the total number of products available.",
-    "detectable_diff_caption": "Based on these parameters, your panel will be able to reliably detect a quality difference of **{delta:.1f} points** (on a 9-point scale) between any two products.",
+    "detectable_diff_caption": "Based on these parameters, the panel will be able to reliably detect a quality difference of **{delta:.1f} points** (on a 9-point scale) between any two products.",
 
     "step_2_title": "Step 2: Input Products",
     "step_2_desc": "How would you like to enter the items being tasted?",
@@ -54,7 +54,7 @@ LANG = {
     "step_3_title": "Step 3: Generate Design",
     "btn_generate": "Generate Block Design",
     "loading_msg": "Initializing R environment and calculating D-optimal incomplete block design via the AlgDesign package...",
-    "timeout_error": "The statistical engine timed out. The mathematical combination requested may not be optimally resolvable. Please adjust your panel size or serving counts.",
+    "timeout_error": "The statistical engine timed out. The mathematical combination requested may not be optimally resolvable. Please adjust panel size or serving counts.",
     "r_missing_error": "R is not installed or not found in the system PATH. Please ensure R is configured.",
     "blank_name_error": "Please ensure all product names are filled in before continuing.",
     "duplicate_name_error": "Duplicate product names detected. Please ensure each product name is unique.",
@@ -68,7 +68,9 @@ LANG = {
     
     "key_title": "Master Key & Prep Sheet",
     "key_desc": "Save this key to translate codes back to real product names after the tasting, and use the 'Total Servings' column to prepare the exact number of samples needed.",
-    "btn_download_key": "Download Master Key (CSV)"
+    "btn_download_key": "Download Master Key (CSV)",
+    
+    "copy_instruction": "*(Tip: To copy and paste to a spreadsheet, click any cell, press **Ctrl+A** / **Cmd+A** to select all, then **Ctrl+C** / **Cmd+C** to copy.)*"
 }
 
 # ==========================================
@@ -428,6 +430,8 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
                     else:
                         st.caption(LANG["results_disclaimer_names"])
                     
+                    st.caption(LANG["copy_instruction"])
+                    
                     csv_export = final_df.to_csv(index=False)
                     st.download_button(LANG["btn_download_sched"], data=csv_export, file_name="tasting_design.csv", mime="text/csv")
 
@@ -435,6 +439,8 @@ if st.button(LANG["btn_generate"], type="primary", use_container_width=True):
                     st.subheader(LANG["key_title"])
                     st.markdown(LANG["key_desc"])
                     st.dataframe(key_df, hide_index=True)
+                    
+                    st.caption(LANG["copy_instruction"])
                     
                     master_key_csv = key_df.to_csv(index=False)
                     st.download_button(LANG["btn_download_key"], data=master_key_csv, file_name="master_key_prep_sheet.csv", mime="text/csv")
