@@ -12,7 +12,7 @@ import re
 # ==========================================
 FEATURES = {
     "show_detectable_difference": True,
-    "show_fatigue_warning": True,
+    "show_fatigue_warning": False,
     "fatigue_moderate_threshold": 5,
     "fatigue_high_threshold": 7,
     "color_safe": "transparent",
