@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import os
 import pandas as pd
 import numpy as np
@@ -92,6 +93,18 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# GOATCOUNTER ANALYTICS
+# ==========================================
+components.html("""
+    <script>
+        window.goatcounter = {
+            path: function(p) { return location.host + p }
+        }
+    </script>
+    <script data-goatcounter="https://eater.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+""", height=0)
 
 # ==========================================
 # DYNAMIC R ENVIRONMENT SETUP
