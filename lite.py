@@ -21,6 +21,12 @@ try:
 except ImportError:
     STATSMODELS_AVAILABLE = False
 
+try:
+    from sklearn.cluster import KMeans
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
 # ==========================================
 # SURVEY PREFIX SETTINGS (EDIT THESE)
 # ==========================================
@@ -37,6 +43,7 @@ UI_TEXT = {
     "app_title": "Sensory analysis tool",
     "app_subtitle": "Upload raw survey data or a previously processed matrix to generate statistical leaderboards.",
     "err_missing_lib": "Missing required python library: statsmodels. Please add it to your requirements.txt file.",
+    "err_sklearn": "Missing required python library: scikit-learn. Please add it to your requirements.txt file to run the Taste Tribes analysis.",
     
     # Step 1: Upload
     "step1_header": "1. Data upload",
@@ -104,6 +111,10 @@ UI_TEXT = {
     "chart_corr_title": "Key driver analysis (correlation)",
     "chart_corr_desc": "This section evaluates how strongly each descriptive attribute influenced the tasters' overall scores. Spearman's rank correlation (ρ) is used, meaning scores closer to 1.0 indicate a very strong positive driver.",
     
+    # Cluster Strings
+    "chart_tribes_title": "Taster demographics (Taste tribes)",
+    "chart_tribes_desc": "This analysis uses a K-Means algorithm to group your tasters into distinct 'tribes' based on their scoring habits. It reveals whether your audience is united, or split into hidden demographics.",
+
     "export_header": "Data export",
     "btn_export": "Download processed matrix (CSV)"
 }
@@ -141,17 +152,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Dynamic R setup (Cloud & Local)
-LOCAL_PATHS = [
-    "/home/eater/R/x86_64-pc-linux-gnu-library/4.2",   # Your local machine
-    "/home/appuser/R/x86_64-pc-linux-gnu-library/4.2", # Streamlit Cloud default
-    "/mount/src/R_libs"                                # Alternative repo-level R library
-]
-R_LIB_CMD = ''
-for p in LOCAL_PATHS:
-    if os.path.exists(p):
-        R_LIB_CMD = f'.libPaths(c("{p}", .libPaths()))\n'
-        break
+# Dynamic R setup (Mirrored from websuite.py)
+LOCAL_R_PATH = "/home/eater/R/x86_64-pc-linux-gnu-library/4.2"
+R_LIB_CMD = f'.libPaths(c("{LOCAL_R_PATH}", .libPaths()))\n' if os.path.exists(LOCAL_R_PATH) else ''
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -501,50 +504,69 @@ if uploaded_file is not None:
                     current_tier = chr(ord(current_tier) + 1)
             adj_df['Tier'] = adj_df['Product'].map(tiers)
 
+            # --- UPDATED SKILLINGS MACK LOGIC (MIRRORED FROM WEBSUITE.PY) ---
             sm_pval = None
             used_fallback = False
             rank_df = df_long.copy()
-            rank_df['Preference points'] = rank_df.groupby('Taster')['Overall liking'].rank(ascending=True, method='average')
+            rank_df['Taster'] = rank_df['Taster'].astype(str).str.strip()
+            rank_df['Product'] = rank_df['Product'].astype(str).str.strip()
 
             try:
                 df_raw_pivot = rank_df.pivot_table(index='Taster', columns='Product', values='Overall liking', aggfunc='mean')
                 df_raw_pivot.to_csv("temp_sm.csv", na_rep="NA")
                 
-                # Auto-install PMCMRplus gracefully if it's completely missing
+                # R script wrapped in tryCatch, writes purely to txt instead of crashing the subprocess
                 r_sm_script = f"""
                 options(warn=-1)
                 {R_LIB_CMD}
-                if (!require("PMCMRplus", character.only = TRUE)) {{
-                    dir.create(Sys.getenv("R_LIBS_USER"), recursive = TRUE, showWarnings = FALSE)
-                    .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
-                    install.packages("PMCMRplus", repos="https://cloud.r-project.org/")
-                    library(PMCMRplus)
-                }}
+                library(PMCMRplus)
+
                 df <- read.csv("temp_sm.csv", row.names=1)
                 mat <- as.matrix(df)
-                res <- skillingsMackTest(mat)
-                write.table(res$p.value, "temp_sm_pval.txt", row.names=FALSE, col.names=FALSE)
+                
+                res_pval <- tryCatch({{
+                  res <- skillingsMackTest(mat)
+                  res$p.value
+                }}, error = function(cond) {{
+                  cat(conditionMessage(cond), file="temp_sm_err.txt")
+                  return(1.0)
+                }})
+                
+                write.table(res_pval, "temp_sm_pval.txt", row.names=FALSE, col.names=FALSE)
                 """
                 with open("run_sm.R", "w") as f: f.write(r_sm_script)
                 
-                # Bumped timeout to 120 seconds to accommodate slow cloud spin-ups or package installs
-                result = subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=120)
+                subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=120)
                 
-                with open("temp_sm_pval.txt", "r") as f:
-                    sm_pval = float(f.read().strip())
-                    
-            except subprocess.CalledProcessError as e:
-                used_fallback = True
-                st.warning(f"R execution failed inside the script. Error details: {e.stderr}")
+                if os.path.exists("temp_sm_pval.txt"):
+                    with open("temp_sm_pval.txt", "r") as f:
+                        raw_val = f.read().strip()
+                        if raw_val and raw_val != "NA":
+                            sm_pval = float(raw_val)
+                            
+                if os.path.exists("temp_sm_err.txt"):
+                    used_fallback = True
+
             except Exception as e:
                 used_fallback = True
-                st.warning(f"R process failed to run. Error: {e}")
+            finally:
+                if os.path.exists("temp_sm.csv"): os.remove("temp_sm.csv")
+                if os.path.exists("run_sm.R"): os.remove("run_sm.R")
+                if os.path.exists("temp_sm_pval.txt"): os.remove("temp_sm_pval.txt")
+                if os.path.exists("temp_sm_err.txt"): os.remove("temp_sm_err.txt")
 
+            # Fallback triggered either by Exception, native R error log, or exactly 1.0 pval
+            if used_fallback or sm_pval == 1.0:
+                used_fallback = True
+                rank_df['Preference points'] = rank_df.groupby('Taster')['Overall liking'].rank(ascending=True, method='average')
+                model_rank_fb = ols('Q("Preference points") ~ C(Product) + C(Taster)', data=rank_df).fit()
+                rank_anova_fb = sm.stats.anova_lm(model_rank_fb, typ=2)
+                sm_pval = rank_anova_fb.loc['C(Product)', 'PR(>F)']
+
+            # Finalize ranking table math (Always run for visualization regardless of fallback)
+            rank_df['Preference points'] = rank_df.groupby('Taster')['Overall liking'].rank(ascending=True, method='average')
             model_rank = ols('Q("Preference points") ~ C(Product) + C(Taster)', data=rank_df).fit()
-            if used_fallback:
-                rank_anova = sm.stats.anova_lm(model_rank, typ=2)
-                sm_pval = rank_anova.loc['C(Product)', 'PR(>F)']
-
+            
             raw_ranks = rank_df.groupby('Product')['Preference points'].mean()
             adj_rank_means = []
             for p in products:
@@ -555,11 +577,6 @@ if uploaded_file is not None:
             correction = raw_ranks.mean() - final_rank_df['Adjusted preference score'].mean()
             final_rank_df['Adjusted preference score'] = final_rank_df['Adjusted preference score'] + correction
             final_rank_df = final_rank_df.sort_values(by='Adjusted preference score', ascending=False).reset_index(drop=True)
-
-            for temp_file in ["temp_sm.csv", "run_sm.R", "temp_sm_pval.txt"]:
-                if os.path.exists(temp_file): 
-                    try: os.remove(temp_file)
-                    except Exception: pass
 
         # ==========================================
         # STEP 5: VISUAL RENDERERS
@@ -608,6 +625,10 @@ if uploaded_file is not None:
                 st.pyplot(fig_rank)
                 
                 st.dataframe(final_rank_df[['Product', 'Adjusted preference score']].round(2), hide_index=True, width="stretch")
+                
+                # New Tiny Engine Indicator Footnote
+                test_name = "Conover-Iman (Fallback)" if used_fallback else "Skillings-Mack (R)"
+                st.caption(f"Engine used: {test_name}")
 
         def render_summary_and_threshold():
             st.divider()
@@ -723,7 +744,6 @@ if uploaded_file is not None:
                 attr_means = df_long.groupby('Product')[valid_summary_cols].mean()
                 attr_means = attr_means.reindex(adj_df['Product'].tolist())
                 
-                # Apply the truncation to the index so the table uses short names
                 attr_means.index = attr_means.index.map(truncate_name)
                 
                 col_tab, col_bar = st.columns([1, 1.5])
@@ -755,7 +775,6 @@ if uploaded_file is not None:
                 valid_corr_cols = [c for c in corr_cols if c in df_long.columns]
                 
                 if len(valid_corr_cols) > 1:
-                    # 1. Global Driver Analysis (Spearman)
                     st.markdown("### Overall drivers of liking")
                     corr_matrix = df_long[valid_corr_cols].corr(method='spearman')
                     target_corr = corr_matrix['Overall liking'].drop('Overall liking').fillna(0).sort_values(ascending=True)
@@ -778,65 +797,154 @@ if uploaded_file is not None:
                     fig_corr.tight_layout()
                     st.pyplot(fig_corr)
 
-                    # # -----------------------------------------------------------------
-                    # # PER-PRODUCT DRIVER ANALYSIS
-                    # # -----------------------------------------------------------------
-                    # st.markdown("---")
-                    # st.markdown("### Per-product driver breakdown")
-                    # st.write("These charts show what specifically drove the scores for each individual product.")
+                    # -----------------------------------------------------------------
+                    # PER-PRODUCT DRIVER ANALYSIS
+                    # -----------------------------------------------------------------
+                    st.markdown("---")
+                    st.markdown("### Per-product driver breakdown")
+                    st.write("These charts show what specifically drove the scores for each individual product.")
                     
-                    # sorted_products = adj_df['Product'].tolist()
-                    # prod_corr_data = []
+                    sorted_products = adj_df['Product'].tolist()
+                    prod_corr_data = []
                     
-                    # for p in sorted_products:
-                    #     p_df = df_long[df_long['Product'] == p][valid_corr_cols]
-                    #     # Calculate Spearman, filling NaNs with 0 in case of zero variance
-                    #     p_corr = p_df.corr(method='spearman')['Overall liking'].drop('Overall liking').fillna(0)
-                    #     prod_corr_data.append(p_corr.rename(p))
+                    for p in sorted_products:
+                        p_df = df_long[df_long['Product'] == p][valid_corr_cols]
+                        p_corr = p_df.corr(method='spearman')['Overall liking'].drop('Overall liking').fillna(0)
+                        prod_corr_data.append(p_corr.rename(p))
                         
-                    # prod_corr_df = pd.DataFrame(prod_corr_data)
-                    # prod_corr_df.index = prod_corr_df.index.map(truncate_name)
-                    # prod_corr_df.columns = prod_corr_df.columns.map(truncate_name)
+                    prod_corr_df = pd.DataFrame(prod_corr_data)
+                    prod_corr_df.index = prod_corr_df.index.map(truncate_name)
+                    prod_corr_df.columns = prod_corr_df.columns.map(truncate_name)
 
-                    # # --- OPTION A: THE INFLUENCE HEATMAP ---
-                    # st.markdown("#### Option A: The influence heatmap")
-                    # fig_heat, ax_heat = plt.subplots(figsize=(len(attr_names) * 1.5 + 2, len(sorted_products) * 0.8 + 1))
-                    # sns.heatmap(prod_corr_df, annot=True, fmt=".2f", cmap="vlag", vmin=-1, vmax=1, 
-                    #             cbar_kws={'label': "Spearman's ρ"}, ax=ax_heat, linewidths=.5)
-                    # ax_heat.set_ylabel("")
-                    # ax_heat.set_xlabel("")
-                    # plt.setp(ax_heat.get_xticklabels(), rotation=45, ha='right')
-                    # fig_heat.tight_layout()
-                    # st.pyplot(fig_heat)
+                    # --- OPTION A: THE INFLUENCE HEATMAP ---
+                    st.markdown("#### Option A: The influence heatmap")
+                    fig_heat, ax_heat = plt.subplots(figsize=(len(attr_names) * 1.5 + 2, len(sorted_products) * 0.8 + 1))
+                    sns.heatmap(prod_corr_df, annot=True, fmt=".2f", cmap="vlag", vmin=-1, vmax=1, 
+                                cbar_kws={'label': "Spearman's ρ"}, ax=ax_heat, linewidths=.5)
+                    ax_heat.set_ylabel("")
+                    ax_heat.set_xlabel("")
+                    plt.setp(ax_heat.get_xticklabels(), rotation=45, ha='right')
+                    fig_heat.tight_layout()
+                    st.pyplot(fig_heat)
 
-                    # # --- OPTION B: SMALL MULTIPLES GRID ---
-                    # st.markdown("#### Option B: Small multiples (Mini-chart grid)")
-                    # num_prods = len(sorted_products)
+                    # --- OPTION B: SMALL MULTIPLES GRID ---
+                    st.markdown("#### Option B: Small multiples (Mini-chart grid)")
+                    num_prods = len(sorted_products)
                     
-                    # # Dynamically scale height based on number of products and attributes
-                    # fig_grid, axes = plt.subplots(nrows=num_prods, ncols=1, figsize=(8, num_prods * len(attr_names) * 0.5 + 1.5), sharex=True)
-                    # if num_prods == 1:
-                    #     axes = [axes]
+                    fig_grid, axes = plt.subplots(nrows=num_prods, ncols=1, figsize=(8, num_prods * len(attr_names) * 0.5 + 1.5), sharex=True)
+                    if num_prods == 1:
+                        axes = [axes]
                     
-                    # for i, p_label in enumerate(prod_corr_df.index):
-                    #     ax = axes[i]
-                    #     p_data = prod_corr_df.loc[p_label].sort_values(ascending=True)
+                    for i, p_label in enumerate(prod_corr_df.index):
+                        ax = axes[i]
+                        p_data = prod_corr_df.loc[p_label].sort_values(ascending=True)
                         
-                    #     colors = ['#d73027' if v < 0 else '#4575b4' for v in p_data]
-                    #     p_data.plot(kind='barh', ax=ax, color=colors, edgecolor='black', alpha=0.8)
+                        colors = ['#d73027' if v < 0 else '#4575b4' for v in p_data]
+                        p_data.plot(kind='barh', ax=ax, color=colors, edgecolor='black', alpha=0.8)
                         
-                    #     ax.set_title(p_label, loc='left', fontweight='bold')
-                    #     ax.set_xlim(-1.1, 1.1)
-                    #     ax.axvline(0, color='black', linewidth=1)
-                    #     sns.despine(ax=ax)
-                    #     ax.grid(axis='x', linestyle='--', alpha=0.4)
+                        ax.set_title(p_label, loc='left', fontweight='bold')
+                        ax.set_xlim(-1.1, 1.1)
+                        ax.axvline(0, color='black', linewidth=1)
+                        sns.despine(ax=ax)
+                        ax.grid(axis='x', linestyle='--', alpha=0.4)
                         
-                    #     for j, v in enumerate(p_data):
-                    #         ax.text(v + (0.02 if v >= 0 else -0.02), j, f"{v:.2f}", va='center', ha='left' if v >= 0 else 'right', fontsize=9)
+                        for j, v in enumerate(p_data):
+                            ax.text(v + (0.02 if v >= 0 else -0.02), j, f"{v:.2f}", va='center', ha='left' if v >= 0 else 'right', fontsize=9)
                             
-                    # axes[-1].set_xlabel("Correlation with Overall Liking (Spearman's ρ)")
-                    # fig_grid.tight_layout()
-                    # st.pyplot(fig_grid)
+                    axes[-1].set_xlabel("Correlation with Overall Liking (Spearman's ρ)")
+                    fig_grid.tight_layout()
+                    st.pyplot(fig_grid)
+
+        def render_taste_tribes():
+            if not getattr(st.session_state, '_sklearn_warned', False) and not SKLEARN_AVAILABLE:
+                st.warning(UI_TEXT["err_sklearn"])
+                st.session_state._sklearn_warned = True
+                return
+            
+            if not SKLEARN_AVAILABLE or len(attr_names) == 0:
+                return 
+                
+            st.divider()
+            st.subheader(UI_TEXT["chart_tribes_title"])
+            st.write(UI_TEXT["chart_tribes_desc"])
+            
+            summary_cols = ['Overall liking'] + attr_names
+            valid_summary_cols = [c for c in summary_cols if c in df_long.columns]
+            
+            # 1. Build Taster Profiles
+            taster_profiles = df_long.groupby('Taster')[valid_summary_cols].mean().dropna()
+            
+            if len(taster_profiles) < 5:
+                st.info("Not enough valid taster data to identify distinct taste tribes.")
+                return
+                
+            # 2. Run K-Means Clustering
+            n_clusters = min(3, max(2, len(taster_profiles) // 3))
+            
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            taster_profiles['Cluster'] = kmeans.fit_predict(taster_profiles)
+            
+            # 3. Dynamic Naming based on Overall Liking centroids
+            cluster_means = taster_profiles.groupby('Cluster')['Overall liking'].mean().sort_values()
+            
+            if n_clusters >= 3:
+                names = {
+                    cluster_means.index[0]: "The Tough Critics", 
+                    cluster_means.index[1]: "The Middle-of-the-Roaders", 
+                    cluster_means.index[-1]: "The Easy Pleasers"
+                }
+            else:
+                names = {
+                    cluster_means.index[0]: "The Tough Critics", 
+                    cluster_means.index[-1]: "The Easy Pleasers"
+                }
+                         
+            taster_profiles['Tribe'] = taster_profiles['Cluster'].map(names)
+            
+            # 4. Tribe Summary Table
+            tribe_counts = taster_profiles['Tribe'].value_counts()
+            tribe_pct = (tribe_counts / len(taster_profiles) * 100).round(1).astype(str) + "%"
+            
+            tribe_summary = taster_profiles.groupby('Tribe')[valid_summary_cols].mean().round(2)
+            tribe_summary.insert(0, 'Panel %', tribe_pct)
+            
+            # Enforce logical rendering order from lowest scoring to highest scoring
+            ordered_tribes = [names[k] for k in cluster_means.index]
+            tribe_summary = tribe_summary.reindex(ordered_tribes)
+            
+            st.markdown("#### Tribe Profiles")
+            st.dataframe(tribe_summary, width="stretch")
+            
+            # 5. Visual Scatterplots Grid
+            st.markdown("#### Scoring Habits")
+            
+            plot_df = df_long.merge(taster_profiles[['Tribe']], left_on='Taster', right_index=True)
+            plot_attrs = [c for c in valid_summary_cols if c != 'Overall liking']
+            
+            if len(plot_attrs) > 0:
+                cols_per_row = min(3, len(plot_attrs)) # Show up to first 3 attributes side-by-side
+                fig, axes = plt.subplots(1, cols_per_row, figsize=(4 * cols_per_row, 4), sharey=True)
+                if cols_per_row == 1: axes = [axes]
+                
+                palette = {
+                    "The Tough Critics": "#d73027", 
+                    "The Middle-of-the-Roaders": "#fee090", 
+                    "The Easy Pleasers": "#4575b4"
+                }
+                
+                for i, attr in enumerate(plot_attrs[:3]): 
+                    ax = axes[i]
+                    sns.scatterplot(data=plot_df, x=attr, y='Overall liking', hue='Tribe', palette=palette, alpha=0.6, ax=ax, legend=(i==len(plot_attrs[:3])-1))
+                    ax.set_title(f"{attr} vs. Liking")
+                    sns.despine(ax=ax)
+                    if i < len(plot_attrs[:3])-1:
+                        if ax.get_legend(): ax.get_legend().remove()
+                    else:
+                        if ax.get_legend(): ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+                        
+                fig.tight_layout()
+                st.pyplot(fig)
+
 
         # ----------------------------------------------------
         # DASHBOARD LAYOUT (Reorder these lines to change the app!)
@@ -849,6 +957,7 @@ if uploaded_file is not None:
         render_polarization()
         render_descriptive()
         render_driver_analysis()
+        # render_taste_tribes()
 
         # Data export section
         st.divider()
