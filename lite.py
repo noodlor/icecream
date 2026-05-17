@@ -141,9 +141,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Dynamic R setup
-LOCAL_R_PATH = "/home/eater/R/x86_64-pc-linux-gnu-library/4.2"
-R_LIB_CMD = f'.libPaths(c("{LOCAL_R_PATH}", .libPaths()))\n' if os.path.exists(LOCAL_R_PATH) else ''
+# Dynamic R setup (Cloud & Local)
+LOCAL_PATHS = [
+    "/home/eater/R/x86_64-pc-linux-gnu-library/4.2",   # Your local machine
+    "/home/appuser/R/x86_64-pc-linux-gnu-library/4.2", # Streamlit Cloud default
+    "/mount/src/R_libs"                                # Alternative repo-level R library
+]
+R_LIB_CMD = ''
+for p in LOCAL_PATHS:
+    if os.path.exists(p):
+        R_LIB_CMD = f'.libPaths(c("{p}", .libPaths()))\n'
+        break
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -501,21 +509,36 @@ if uploaded_file is not None:
             try:
                 df_raw_pivot = rank_df.pivot_table(index='Taster', columns='Product', values='Overall liking', aggfunc='mean')
                 df_raw_pivot.to_csv("temp_sm.csv", na_rep="NA")
+                
+                # Auto-install PMCMRplus gracefully if it's completely missing
                 r_sm_script = f"""
                 options(warn=-1)
                 {R_LIB_CMD}
-                library(PMCMRplus)
+                if (!require("PMCMRplus", character.only = TRUE)) {{
+                    dir.create(Sys.getenv("R_LIBS_USER"), recursive = TRUE, showWarnings = FALSE)
+                    .libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+                    install.packages("PMCMRplus", repos="https://cloud.r-project.org/")
+                    library(PMCMRplus)
+                }}
                 df <- read.csv("temp_sm.csv", row.names=1)
                 mat <- as.matrix(df)
                 res <- skillingsMackTest(mat)
                 write.table(res$p.value, "temp_sm_pval.txt", row.names=FALSE, col.names=FALSE)
                 """
                 with open("run_sm.R", "w") as f: f.write(r_sm_script)
-                subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=30)
+                
+                # Bumped timeout to 120 seconds to accommodate slow cloud spin-ups or package installs
+                result = subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=120)
+                
                 with open("temp_sm_pval.txt", "r") as f:
                     sm_pval = float(f.read().strip())
-            except Exception:
+                    
+            except subprocess.CalledProcessError as e:
                 used_fallback = True
+                st.warning(f"R execution failed inside the script. Error details: {e.stderr}")
+            except Exception as e:
+                used_fallback = True
+                st.warning(f"R process failed to run. Error: {e}")
 
             model_rank = ols('Q("Preference points") ~ C(Product) + C(Taster)', data=rank_df).fit()
             if used_fallback:
