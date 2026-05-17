@@ -508,7 +508,17 @@ if uploaded_file is not None:
                 r_sm_script = f"""
                 options(warn=-1)
                 {R_LIB_CMD}
-                library(PMCMRplus)
+                
+                # 1. Create a writable directory on the cloud server
+                local_lib <- Sys.getenv("R_LIBS_USER")
+                dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
+                .libPaths(c(local_lib, .libPaths()))
+
+                # 2. Quietly auto-install PMCMRplus if it is missing
+                if (!require("PMCMRplus", character.only = TRUE, quietly = TRUE)) {{
+                    install.packages("PMCMRplus", repos="https://cloud.r-project.org/", lib=local_lib, quiet=TRUE)
+                    library(PMCMRplus, lib.loc=local_lib)
+                }}
 
                 df <- read.csv("temp_sm.csv", row.names=1)
                 mat <- as.matrix(df)
@@ -525,7 +535,8 @@ if uploaded_file is not None:
                 """
                 with open("run_sm.R", "w") as f: f.write(r_sm_script)
                 
-                result = subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=120)
+                # Bumping the timeout to 300 seconds (5 minutes) so the cloud server has time to download and compile the package the first time
+                result = subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=300)
                 
                 if os.path.exists("temp_sm_pval.txt"):
                     with open("temp_sm_pval.txt", "r") as f:
@@ -538,7 +549,7 @@ if uploaded_file is not None:
                         err_text = f.read().strip()
                         if err_text:
                             used_fallback = True
-                            r_error_msg = f"R Caught Error: {err_text}\n\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+                            r_error_msg = f"R Caught Error: {err_text}\\n\\nSTDOUT:\\n{result.stdout}\\n\\nSTDERR:\\n{result.stderr}"
 
             except subprocess.CalledProcessError as e:
                 used_fallback = True
