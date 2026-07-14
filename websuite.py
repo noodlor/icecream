@@ -15,6 +15,7 @@ import subprocess
 import warnings
 import random
 import re
+import textwrap
 
 # Silence the Swarmplot point-placement warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='seaborn')
@@ -106,8 +107,25 @@ components.html("""
 # ==========================================
 # DYNAMIC R ENVIRONMENT SETUP
 # ==========================================
-LOCAL_R_PATH = "/home/eater/R/x86_64-pc-linux-gnu-library/4.2"
-R_LIB_CMD = f'.libPaths(c("{LOCAL_R_PATH}", .libPaths()))\n' if os.path.exists(LOCAL_R_PATH) else ''
+LOCAL_PATHS = [
+    "/home/eater/R/x86_64-pc-linux-gnu-library/4.2",   # Your local machine
+    "/home/appuser/R/x86_64-pc-linux-gnu-library/4.2", # Streamlit Cloud default
+    "/mount/src/R_libs"                                # Alternative repo-level R library
+]
+R_LIB_CMD = ''
+for p in LOCAL_PATHS:
+    if os.path.exists(p):
+        R_LIB_CMD = f'.libPaths(c("{p}", .libPaths()))\n'
+        break
+
+# ==========================================
+# SURVEY PREFIX SETTINGS
+# ==========================================
+SURVEY_PREFIXES = {
+    "code": "ID:",                   
+    "overall": "Q1:",                
+    "attr_regex": r"^Q[2-9]\d*:"     
+}
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -128,7 +146,6 @@ def load_data(uploaded_file, gsheet_url):
     return None
 
 def clean_3_digit_code(val):
-    """Aggressively cleans floats, ints, spaces, and strings to match perfectly."""
     if pd.isna(val): return ""
     val_str = str(val).strip()
     if val_str.endswith(".0"): 
@@ -138,15 +155,44 @@ def clean_3_digit_code(val):
         return val_str.zfill(3)
     return val_str.upper()
 
+def clean_code(val):
+    if pd.isna(val): return ""
+    val_str = str(val).strip()
+    if val_str.endswith(".0"): 
+        val_str = val_str[:-2]
+    val_str = re.sub(r'[^a-zA-Z0-9]', '', val_str)
+    return val_str.upper()
+
+def format_col_name(c):
+    return f"{c[:40]}...{c[-15:]}" if len(c) > 55 else c
+
+def extract_attr_name(col_str):
+    clean = re.sub(SURVEY_PREFIXES["attr_regex"], '', col_str, flags=re.IGNORECASE).strip()
+    clean = re.sub(r'\.\d+$', '', clean).strip()
+    return clean
+
+def truncate_name(name, max_width=18, absolute_max=75):
+    """
+    Wraps long names into multiple lines instead of deleting characters.
+    This guarantees every label stays 100% unique, preventing Seaborn aggregation bugs.
+    """
+    name_str = str(name)
+    
+    # If it is absurdly long (e.g., a whole sentence), do a smart middle-trim first 
+    # to prevent giant vertical labels from taking up the whole screen.
+    if len(name_str) > absolute_max:
+        half = (absolute_max - 3) // 2
+        name_str = f"{name_str[:half]}...{name_str[-half:]}"
+        
+    # Wrap the text with newlines so it stacks cleanly on the chart's X-axis
+    return textwrap.fill(name_str, width=max_width)
+
 def clear_state_keys(keys_to_clear):
-    """Safely purges specific keys from the session state to reset a module."""
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
-    st.rerun()
 
 def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd):
-    """Abstracts the R script generation for D-Optimal matrix designs."""
     r_script = f"""
     options(warn=-1)
     {r_lib_cmd}
@@ -176,10 +222,8 @@ def generate_d_optimal_matrix(v_count, b_count, k_count, r_lib_cmd):
     subprocess.run(["Rscript", "generate_design.R"], capture_output=True, text=True, check=True, timeout=30)
     df_result = pd.read_csv("temp_design.csv")
     
-    if os.path.exists("generate_design.R"):
-        os.remove("generate_design.R")
-    if os.path.exists("temp_design.csv"):
-        os.remove("temp_design.csv")
+    if os.path.exists("generate_design.R"): os.remove("generate_design.R")
+    if os.path.exists("temp_design.csv"): os.remove("temp_design.csv")
         
     return df_result
 
@@ -201,7 +245,6 @@ if "scroll_to_top" not in st.session_state:
 if "decoder_mode" not in st.session_state:
     st.session_state.decoder_mode = "start"
 
-# Lightweight keys for UI tools that don't need full state retention
 if "corr_upload_key" not in st.session_state:
     st.session_state.corr_upload_key = 0
 if "discrim_key" not in st.session_state:
@@ -223,15 +266,8 @@ def send_sim_to_analyzer():
     go_to_analyzer()
 
 def send_sim_to_profiler():
-    st.session_state.active_tool = "Flavor Profiler"
+    st.session_state.active_tool = "Descriptive Analyzer"
     st.session_state.scroll_to_top = True
-
-def reset_decoder_state():
-    st.session_state.decoded_df = None
-
-def reset_raw_survey_state():
-    st.session_state.decoded_df = None
-    st.session_state.decoder_mode = "start"
 
 if st.session_state.scroll_to_top:
     scroll_script = """
@@ -279,7 +315,6 @@ nav_btn("Descriptive Analyzer")
 st.sidebar.markdown("**Specialty Tests**")
 nav_btn("Discrimination Test")
 nav_btn("Correlation Matrix")
-nav_btn("Documentation")
 
 tool = st.session_state.active_tool
 
@@ -518,7 +553,6 @@ elif tool == "Experimental Block Designer":
                 try:
                     df_r = generate_d_optimal_matrix(num_products, num_tasters, servings_per_taster, R_LIB_CMD)
                     
-                    # Pre-shuffle the rows to protect against panelist dropouts
                     df_r = df_r.sample(frac=1).reset_index(drop=True)
                     
                     expected_count = (num_tasters * servings_per_taster) / num_products
@@ -690,8 +724,6 @@ elif tool == "Hedonic Simulator":
             with st.spinner('Running D-Optimal design and simulating scores...'):
                 try:
                     df_r = generate_d_optimal_matrix(sim_products, sim_tasters, sim_servings, R_LIB_CMD)
-                    
-                    # Pre-shuffle the rows to protect against panelist dropouts in simulation too
                     df_r = df_r.sample(frac=1).reset_index(drop=True)
                     
                     blind_codes = [str(x).zfill(3) for x in random.sample(range(100, 1000), int(sim_products))]
@@ -926,12 +958,12 @@ elif tool == "Descriptive Simulator":
 # ==========================================
 elif tool == "Survey Decoder":
     st.title("Survey Decoder (Universal Hub)")
-    st.markdown("Convert raw, unorganized survey exports into a clean, analysis-ready master matrix.")
+    st.markdown("Convert raw, unorganized survey exports into clean, analysis-ready master matrices. This tool automatically separates numeric scores from qualitative written feedback.")
 
     col_clear, _ = st.columns([1, 5])
     with col_clear:
         if st.button("Clear Decoder Memory"):
-            clear_state_keys(['smart_matrix'])
+            clear_state_keys(['smart_matrix', 'comments_matrix'])
             st.rerun()
 
     with st.container(border=True):
@@ -941,171 +973,298 @@ elif tool == "Survey Decoder":
         df_raw = pd.read_csv(uploaded_file)
         cols = list(df_raw.columns)
         
-        st.subheader("1. Master Key (Optional)")
-        st.markdown("Upload your blinding key to automatically convert 3-digit codes into real brand names.")
-        uploaded_key = st.file_uploader("Upload Master Key (CSV)", type=["csv"], key="master_key")
-        master_dict = {}
+        # SMART ANCHOR ENGINE
+        taster_idx = next((i for i, c in enumerate(cols) if 'taster' in c.lower() or 'id' in c.lower() and not str(c).upper().startswith(SURVEY_PREFIXES["code"].upper())), 0)
         
-        def clean_3_digit_code(val):
-            if pd.isna(val): return ""
-            return str(val).split('.')[0].strip()
-
-        if uploaded_key:
-            df_key = pd.read_csv(uploaded_key)
-            mapped_cols = {}
-            for c in df_key.columns:
-                norm = re.sub(r'[^a-z0-9]', '', c.lower())
-                if 'code' in norm:
-                    mapped_cols['Code'] = c
-                elif 'name' in norm or 'real' in norm or 'product' in norm:
-                    mapped_cols['Name'] = c
-                    
-            if 'Code' in mapped_cols and 'Name' in mapped_cols:
-                df_key[mapped_cols['Code']] = df_key[mapped_cols['Code']].apply(clean_3_digit_code)
-                master_dict = dict(zip(df_key[mapped_cols['Code']], df_key[mapped_cols['Name']].astype(str).str.strip()))
-                st.success(f"✅ Loaded {len(master_dict)} brand names from Master Key.")
-            elif len(df_key.columns) >= 2:
-                # Fallback
-                master_dict = dict(zip(df_key.iloc[:, 0].apply(clean_3_digit_code), df_key.iloc[:, 1].astype(str).str.strip()))
-                st.success(f"✅ Loaded {len(master_dict)} brand names from Master Key.")
-
-        st.divider()
-        st.subheader("2. Map Survey Columns")
+        code_cols = []
+        overall_cols = []
+        comment_cols = []
         
-        # The Format Squeezer (Keeps the beginning, shows the end!)
-        def format_col_name(c):
-            if len(c) > 55:
-                return f"{c[:35]}...{c[-15:]}"
-            return c
-
-        # The "Strict Rule" Smart Guesser
-        def guess_col_index(search_term, serving_index, columns, fallback_index):
-            matches = []
-            search_core = search_term.lower()[:5]
+        comment_keywords = ['describe', 'descriptive', 'comment', 'thoughts', 'why', 'additional', 'specific', 'explain', 'feedback']
+        
+        for c in cols:
+            c_str = str(c).strip()
+            c_lower = c_str.lower()
             
-            for i, c in enumerate(columns):
-                c_lower = c.lower()
+            # Detect Comments First
+            if any(k in c_lower for k in comment_keywords):
+                comment_cols.append(c)
+                continue
                 
-                # If this column contains any of these "open ended" prompt words, ban it completely
-                if any(bad in c_lower for bad in ['describe', 'descriptive', 'thoughts', 'why', 'additional']):
-                    if search_core not in ['descr', 'thoug', 'text ']:
-                        continue
-                        
-                if search_core in c_lower:
-                    matches.append(i)
+            if c_str.upper().startswith(SURVEY_PREFIXES["code"].upper()):
+                code_cols.append(c)
+            elif c_str.upper().startswith(SURVEY_PREFIXES["overall"].upper()):
+                overall_cols.append(c)
+                
+        # Fallback detection if prefixes aren't strictly used
+        if not code_cols:
+            for c in cols:
+                c_lower = str(c).lower()
+                if c in comment_cols: continue
+                if 'code' in c_lower and 'zip' not in c_lower:
+                    code_cols.append(c)
+                elif 'sample' in c_lower and not any(w in c_lower for w in ['overall', 'like', 'rate', 'taste']):
+                    code_cols.append(c)
                     
-            if len(matches) > serving_index:
-                return matches[serving_index]
-            return fallback_index
+        if not overall_cols:
+            for c in cols:
+                c_lower = str(c).lower()
+                if c in comment_cols: continue
+                if 'overall' in c_lower:
+                    overall_cols.append(c)
+                    
+        guessed_servings = min(len(code_cols), len(overall_cols))
+        if guessed_servings == 0:
+            guessed_servings = max(1, len(code_cols), len(overall_cols))
 
-        taster_idx = next((i for i, c in enumerate(cols) if 'taster' in c.lower() or 'id' in c.lower()), 0)
-        code_match_count = sum(1 for c in cols if 'code' in c.lower())
-        guessed_servings = code_match_count if code_match_count > 0 else max(1, (len(cols) - 1) // 2)
+        inferred_attrs = []
+        if len(code_cols) > 0 and len(overall_cols) > 0:
+            start_idx = cols.index(code_cols[0])
+            end_idx = cols.index(code_cols[1]) if len(code_cols) > 1 else len(cols)
+            
+            block_cols = cols[start_idx+1 : end_idx]
+            
+            prefix_attrs = [c for c in block_cols if re.match(SURVEY_PREFIXES["attr_regex"], str(c), re.IGNORECASE) and c not in comment_cols]
+            if prefix_attrs:
+                for c in prefix_attrs:
+                    clean_name = extract_attr_name(c).capitalize()
+                    if clean_name and clean_name not in inferred_attrs:
+                        inferred_attrs.append(clean_name)
+            else:
+                for c in block_cols:
+                    if c in overall_cols or c in comment_cols: continue
+                    c_lower = str(c).lower()
+                    if not any(bad in c_lower for bad in ['photo', 'upload', 'code', 'sample']):
+                        clean_c = re.sub(r'\.\d+$', '', str(c))
+                        clean_c = re.sub(r'[^a-zA-Z\s]', '', clean_c).strip()
+                        words = clean_c.split()
+                        stop_words = ['how', 'much', 'do', 'you', 'like', 'the', 'rate', 'this', 'would', 'overall', 'please', 'indicate', 'your', 'opinion', 'of']
+                        meaningful = [w for w in words if w.lower() not in stop_words]
+                        if meaningful:
+                            attr_name = " ".join(meaningful).capitalize()
+                            if attr_name not in inferred_attrs:
+                                inferred_attrs.append(attr_name)
 
-        col_taster, col_serv, col_attrs = st.columns([1.5, 1, 1])
+        default_attrs_str = ", ".join(inferred_attrs) if inferred_attrs else ""
+
+        st.subheader("1. Survey Configuration")
+        st.write(f"Based on your column headers, we detected **{guessed_servings}** samples per taster. We also auto-detected your attributes and written comment fields. Review and adjust below if necessary.")
+
+        col_taster, col_serv = st.columns([1.5, 1])
         with col_taster:
-            taster_col = st.selectbox("Taster ID Column", cols, index=taster_idx, format_func=format_col_name)
+            taster_col = st.selectbox("Taster ID column", cols, index=taster_idx, format_func=format_col_name)
         with col_serv:
-            servings = st.number_input("Number of Servings", min_value=1, max_value=20, value=guessed_servings, step=1)
-        with col_attrs:
-            num_attrs = st.number_input("Descriptive Attributes", min_value=0, max_value=10, value=3, help="Do not count Product Code or Overall Liking here.")
-
-        st.markdown("**Define your Custom Descriptive Attributes:**")
-        default_names = ["Flavor", "Texture", "Sweetness", "Appearance", "Aroma"]
-        attr_names = []
-        if num_attrs > 0:
-            name_cols = st.columns(int(num_attrs))
-            for a in range(int(num_attrs)):
-                default_val = default_names[a] if a < len(default_names) else f"Attribute {a+1}"
-                with name_cols[a]:
-                    attr_names.append(st.text_input(f"Attr {a+1} Name", value=default_val, key=f"attr_name_{a}"))
-
-        st.markdown("**Map Columns for Each Serving:**")
-        st.markdown("*Verify the auto-mapped columns below. The dropdowns are shortened to show the end of the text so you can spot the '.1' and '.2' labels easily.*")
+            servings = st.number_input("Samples per taster", min_value=1, max_value=20, value=guessed_servings, step=1)
         
-        serving_mappings = []
-        
-        for i in range(servings):
-            st.markdown(f"#### Serving {i+1}")
-            
-            # The Waterfall Layout
-            left_col, right_col = st.columns(2)
-            
-            with left_col:
-                c_idx = guess_col_index('code', i, cols, min(i*3 + 1, len(cols)-1))
-                code_c = st.selectbox("Code Col", cols, index=c_idx, format_func=format_col_name, key=f"mcode_{i}")
-                
-                o_idx = guess_col_index('overall', i, cols, min(i*3 + 2, len(cols)-1))
-                overall_c = st.selectbox("Overall Liking Col", cols, index=o_idx, format_func=format_col_name, key=f"moverall_{i}")
-            
-            attr_c = []
-            with right_col:
-                for a, name in enumerate(attr_names):
-                    a_idx = guess_col_index(name, i, cols, min(i*3 + 3 + a, len(cols)-1))
-                    attr_c.append(st.selectbox(f"{name} Col", cols, index=a_idx, format_func=format_col_name, key=f"mattr_{i}_{a}"))
-            
-            serving_mappings.append({
-                "code": code_c, 
-                "overall": overall_c,
-                "attrs": attr_c
-            })
-            st.write("")
+        attr_input = st.text_input("Descriptive attributes (comma-separated)", value=default_attrs_str)
+        attr_names = [x.strip() for x in attr_input.split(',') if x.strip()]
 
+        with st.expander("Review column mappings (advanced)"):
+            tabs = st.tabs([f"Serving {i+1}" for i in range(servings)])
+            serving_mappings = []
+            
+            for i, tab in enumerate(tabs):
+                with tab:
+                    c1, c2 = st.columns(2)
+                    
+                    start_idx = cols.index(code_cols[i]) if i < len(code_cols) else 0
+                    end_idx = cols.index(code_cols[i+1]) if i+1 < len(code_cols) else len(cols)
+                    block_cols = cols[start_idx:end_idx]
+                    
+                    with c1:
+                        c_idx = cols.index(code_cols[i]) if i < len(code_cols) else 0
+                        code_c = st.selectbox("Product code", cols, index=c_idx, format_func=format_col_name, key=f"mcode_{i}")
+                        
+                        o_col_in_block = [c for c in block_cols if c in overall_cols]
+                        o_idx = cols.index(o_col_in_block[0]) if o_col_in_block else min(c_idx + 1, len(cols)-1)
+                        overall_c = st.selectbox("Overall liking", cols, index=o_idx, format_func=format_col_name, key=f"moverall_{i}")
+                        
+                        comment_c_in_block = [c for c in block_cols if c in comment_cols]
+                        detected_comment = comment_c_in_block[0] if comment_c_in_block else "None (No comments)"
+                        comment_options = ["None (No comments)"] + cols
+                        comment_idx = comment_options.index(detected_comment) if detected_comment in comment_options else 0
+                        
+                        comment_c = st.selectbox("Written Comments / Feedback", comment_options, index=comment_idx, format_func=lambda x: format_col_name(x) if x != "None (No comments)" else x, key=f"mcomment_{i}")
+
+                    attr_c = []
+                    with c2:
+                        for a, name in enumerate(attr_names):
+                            best_match_idx = min(c_idx + 2 + a, len(cols)-1)
+                            for bc in block_cols:
+                                clean_bc = extract_attr_name(bc).lower()
+                                if not clean_bc: 
+                                    clean_bc = re.sub(r'\.\d+$', '', str(bc)).lower()
+                                if name.lower() in clean_bc:
+                                    best_match_idx = cols.index(bc)
+                                    break
+                                    
+                            attr_c.append(st.selectbox(f"{truncate_name(name, 25)} score", cols, index=best_match_idx, format_func=format_col_name, key=f"mattr_{i}_{a}"))
+                    
+                    serving_mappings.append({
+                        "code": code_c, 
+                        "overall": overall_c, 
+                        "comment": comment_c, 
+                        "attrs": attr_c
+                    })
+
+        # ==========================================
+        # 2. PRODUCT MAPPING
+        # ==========================================
         st.divider()
+        st.subheader("2. Product Mapping")
+        st.write("We extracted the unique codes from your survey based on your column selections. Upload a master key to automatically assign product names, or manually type them into the grid.")
+
+        unique_raw_codes = []
+        for mapping in serving_mappings:
+            code_col_name = mapping['code']
+            unique_raw_codes.extend(df_raw[code_col_name].dropna().astype(str).tolist())
         
-        if st.button("Stack Data into Master Matrix", type="primary", width="stretch"):
-            with st.spinner("Stacking and decoding..."):
-                stacked_rows = []
+        unique_codes = sorted(list(set([clean_code(c) for c in unique_raw_codes if str(c).strip() != ""])))
+        unique_codes = [c for c in unique_codes if c]
+
+        uploaded_key = st.file_uploader("Upload master key (CSV - optional)", type=["csv"], key="opt_key")
+        
+        master_dict = {}
+        if uploaded_key:
+            try:
+                df_key = pd.read_csv(uploaded_key)
+                key_code_col, key_name_col = None, None
+                
+                for c in df_key.columns:
+                    norm_c = re.sub(r'[^a-z0-9]', '', c.lower())
+                    if any(x in norm_c for x in ['code', 'id', 'number']) and key_code_col is None:
+                        key_code_col = c
+                    elif any(x in norm_c for x in ['name', 'product', 'brand', 'real']) and key_name_col is None:
+                        key_name_col = c
+                
+                if not key_code_col or not key_name_col:
+                    if len(df_key.columns) >= 2:
+                        key_code_col = df_key.columns[0]
+                        key_name_col = df_key.columns[1]
+                
+                if key_code_col and key_name_col:
+                    df_key[key_code_col] = df_key[key_code_col].apply(clean_code)
+                    master_dict = dict(zip(df_key[key_code_col], df_key[key_name_col].astype(str).str.strip()))
+                    
+                    matched = [c for c in unique_codes if c in master_dict]
+                    
+                    if len(matched) == 0:
+                        st.error(f"Master key mismatch: we loaded {len(master_dict)} names from your key, but none of them match the codes found in your survey data. Please check your file.")
+                    elif len(matched) < len(unique_codes):
+                        unmatched = [c for c in unique_codes if c not in master_dict]
+                        st.warning(f"Partial match: found {len(matched)} matches, but {len(unmatched)} survey codes are missing from your key.")
+                    else:
+                        st.success(f"Perfect match: successfully linked all {len(unique_codes)} survey codes to product names.")
+                else:
+                    st.error("Could not identify the code and name columns in your master key.")
+            except Exception as e:
+                st.error(f"Could not read the master key file. Error: {e}")
+
+        mapping_data = []
+        for c in unique_codes:
+            mapping_data.append({"Code": c, "Product name": master_dict.get(c, c)})
+            
+        mapping_df = pd.DataFrame(mapping_data)
+        
+        st.write("**Verify and edit product names:**")
+        st.info("This table is interactive. Click directly into the 'Product name' column to manually type or edit a brand name.")
+        edited_mapping = st.data_editor(mapping_df, width="stretch", hide_index=True)
+        final_name_mapping = dict(zip(edited_mapping['Code'], edited_mapping['Product name'].astype(str).str.strip()))
+        
+        st.divider()
+
+        if st.button("Stack Data into Master Matrices", type="primary", width="stretch"):
+            with st.spinner("Stacking numeric data and extracting qualitative comments..."):
+                stacked_numeric_rows = []
+                stacked_comment_rows = []
+                
                 for idx, row in df_raw.iterrows():
-                    taster_id = row[taster_col]
+                    t_id = str(row[taster_col])
                     for s_idx in range(servings):
                         mapping = serving_mappings[s_idx]
-                        
                         raw_code = row[mapping["code"]]
                         overall_score = row[mapping["overall"]]
                         
-                        # Decode product names if we have a master key
-                        prod_name = str(raw_code).strip()
-                        if master_dict:
-                            safe_val = clean_3_digit_code(raw_code)
-                            prod_name = master_dict.get(safe_val, safe_val)
+                        safe_val = clean_code(raw_code)
+                        prod_name = final_name_mapping.get(safe_val, safe_val)
+                        if not prod_name:
+                            prod_name = "Unknown"
                             
-                        new_row = {
-                            "Taster": taster_id,
-                            "Product": prod_name,
+                        # Build Numeric Row
+                        new_num_row = {
+                            "Taster": t_id, 
+                            "Product": prod_name, 
                             "Overall Liking": overall_score
                         }
-                        
-                        # Add custom attributes
                         for a_idx, attr_col in enumerate(mapping["attrs"]):
-                            attr_name = attr_names[a_idx]
-                            new_row[attr_name] = row[attr_col]
-                            
-                        stacked_rows.append(new_row)
+                            if a_idx < len(attr_names):
+                                new_num_row[attr_names[a_idx]] = row[attr_col]
+                        stacked_numeric_rows.append(new_num_row)
                         
-                df_master = pd.DataFrame(stacked_rows)
-                df_master = df_master.dropna(subset=["Product", "Overall Liking"], how='any')
-                st.session_state.smart_matrix = df_master
+                        # Build Comment Row (If applicable)
+                        if mapping["comment"] != "None (No comments)":
+                            comment_text = row[mapping["comment"]]
+                            if pd.notna(comment_text) and str(comment_text).strip() != "":
+                                stacked_comment_rows.append({
+                                    "Taster": t_id,
+                                    "Product": prod_name,
+                                    "Overall Liking": overall_score,
+                                    "Comments": str(comment_text).strip()
+                                })
+                        
+                # Process Numeric Matrix
+                df_master_numeric = pd.DataFrame(stacked_numeric_rows)
+                df_master_numeric['Overall Liking'] = pd.to_numeric(df_master_numeric['Overall Liking'], errors='coerce')
+                df_master_numeric = df_master_numeric.dropna(subset=["Product", "Overall Liking"], how='any')
+                st.session_state.smart_matrix = df_master_numeric
+                
+                # Process Comments Matrix
+                if stacked_comment_rows:
+                    df_master_comments = pd.DataFrame(stacked_comment_rows)
+                    df_master_comments = df_master_comments.sort_values(by="Product").reset_index(drop=True)
+                    st.session_state.comments_matrix = df_master_comments
+                else:
+                    st.session_state.comments_matrix = pd.DataFrame()
                 
         if 'smart_matrix' in st.session_state:
-            st.success("✅ Master Matrix Successfully Built!")
-            st.dataframe(st.session_state.smart_matrix.head(8), hide_index=True)
+            st.success("Matrices Successfully Built!")
             
-            dl_csv = st.session_state.smart_matrix.to_csv(index=False)
-            st.download_button("Download Master Matrix (CSV)", data=dl_csv, file_name="master_decoded_matrix.csv", mime="text/csv")
+            # --- NUMERIC OUTPUT ---
+            st.subheader("Numeric Matrix (For Statistical Analysis)")
+            st.dataframe(st.session_state.smart_matrix.head(5), hide_index=True)
             
+            dl_csv_num = st.session_state.smart_matrix.to_csv(index=False)
+            st.download_button("Download Numeric Matrix (CSV)", data=dl_csv_num, file_name="master_numeric_matrix.csv", mime="text/csv", type="primary")
+            
+            # --- COMMENTS OUTPUT ---
+            st.divider()
+            if not st.session_state.comments_matrix.empty:
+                st.subheader("Comments Matrix")
+                st.dataframe(st.session_state.comments_matrix.head(5), hide_index=True)
+                
+                dl_csv_com = st.session_state.comments_matrix.to_csv(index=False)
+                st.download_button("Download Comments (CSV)", data=dl_csv_com, file_name="master_comments_matrix.csv", mime="text/csv")
+            else:
+                st.info("No text comments were mapped or extracted during this run.")
+            
+            st.divider()
             st.markdown("### Send to Analyzer")
+            st.markdown("*(Note: Only the Numeric Matrix is sent to the statistical engines.)*")
             h_col, d_col = st.columns(2)
             with h_col:
-                if st.button("Send to Hedonic Analyzer (Overall Winners)", type="primary", width="stretch"):
-                    st.session_state.smart_matrix = st.session_state.smart_matrix # Keep it alive
+                if st.button("Send to Hedonic Analyzer (Overall Winners)", width="stretch"):
+                    st.session_state.smart_matrix = st.session_state.smart_matrix 
                     st.session_state.active_tool = "Hedonic Analyzer"
                     st.rerun()
             with d_col:
-                if st.button("Send to Descriptive Analyzer (Flavor Profiles)", type="primary", width="stretch"):
-                    st.session_state.desc_sim_df = st.session_state.smart_matrix # Preload it!
+                if st.button("Send to Descriptive Analyzer (Flavor Profiles)", width="stretch"):
+                    st.session_state.desc_sim_df = st.session_state.smart_matrix 
                     st.session_state.active_tool = "Descriptive Analyzer"
                     st.rerun()
+
+# ==========================================
+# TOOL 6: HEDONIC ANALYZER
+# ==========================================
 
 elif tool == "Hedonic Analyzer":
     st.title("Hedonic Analyzer (Two-Way ANOVA)")
@@ -1114,13 +1273,14 @@ elif tool == "Hedonic Analyzer":
     col_clear, _ = st.columns([1, 5])
     with col_clear:
         if st.button("Clear Analyzer Data"):
-            clear_state_keys(['decoded_df'])
+            clear_state_keys(['decoded_df', 'smart_matrix'])
+            st.rerun()
 
     if not STATSMODELS_AVAILABLE:
         st.error("Missing library. Please run `pip install statsmodels` to use this tool.")
         st.stop()
 
-    if st.session_state.decoded_df is None:
+    if st.session_state.decoded_df is None and st.session_state.get('smart_matrix') is None:
         st.info("Formatting requirement: Ensure your dataset has a column named exactly 'Taster', followed by the products as columns.")
 
     with st.container(border=True):
@@ -1131,14 +1291,13 @@ elif tool == "Hedonic Analyzer":
         df = None
         transformed_df_display = None
         
-        # Catch the baton from the Survey Decoder
         if st.session_state.get('smart_matrix') is not None:
             st.success("✅ **Successfully loaded Master Matrix from the Survey Decoder.**")
             df_raw = st.session_state.smart_matrix.copy()
             if st.button("Clear Imported Data & Upload a New CSV"):
                 st.session_state.smart_matrix = None
                 st.rerun()
-        elif st.session_state.get('decoded_df') is not None: # Legacy fallback
+        elif st.session_state.get('decoded_df') is not None: 
             st.success("**Successfully loaded decoded survey data from memory.**")
             df_raw = st.session_state.decoded_df.copy()
         else:
@@ -1154,7 +1313,6 @@ elif tool == "Hedonic Analyzer":
             st.subheader("1. Map Survey Columns")
             cols = list(df_raw.columns)
             
-            # Check if it's long format (has Product and Overall Liking) or wide format (Taster + Products)
             is_long_format = False
             if any('product' in c.lower() for c in cols) and any('overall' in c.lower() or 'liking' in c.lower() or 'score' in c.lower() for c in cols):
                 is_long_format = True
@@ -1171,12 +1329,10 @@ elif tool == "Hedonic Analyzer":
                     default_score = next((i for i, c in enumerate(cols) if 'overall' in c.lower() or 'liking' in c.lower() or 'score' in c.lower()), 2)
                     score_col = st.selectbox("Overall Liking Score", cols, index=default_score)
 
-                # Ensure scores are numeric so math doesn't crash
                 df_long_in = df_raw[[taster_col, prod_col, score_col]].rename(columns={taster_col: 'Taster', prod_col: 'Product', score_col: 'Score'})
                 df_long_in['Score'] = pd.to_numeric(df_long_in['Score'], errors='coerce')
                 df_long_in = df_long_in.dropna(subset=['Score'])
                 
-                # Convert to wide format so the rest of the legacy Hedonic Analyzer works perfectly!
                 df = df_long_in.pivot_table(index='Taster', columns='Product', values='Score', aggfunc='mean').reset_index()
                 df.columns.name = None
             else:
@@ -1202,15 +1358,13 @@ elif tool == "Hedonic Analyzer":
                 st.error("Error: Insufficient variance in data. All scores are identical or invalid. Statistical analysis cannot be performed.")
                 st.stop()
 
-            # Create the RAW long dataframe (This will be our single source of truth for all ANOVA math)
             df_raw_long_source = df_numeric.copy()
             df_raw_long_source.insert(0, 'Taster', df['Taster'])
             df_long = df_raw_long_source.melt(id_vars=['Taster'], var_name='Product', value_name='Score').dropna()
             df_long['Taster'] = df_long['Taster'].astype(str).str.strip()
             df_long['Product'] = df_long['Product'].astype(str).str.strip()
-            df_raw_long = df_long.copy() # Keep a specific alias for the calibration table
+            df_raw_long = df_long.copy() 
 
-            # Create a separate Z-scored dataframe strictly for visual plotting (if requested)
             df_plot_long = df_long.copy()
             
             if apply_zscore:
@@ -1238,7 +1392,6 @@ elif tool == "Hedonic Analyzer":
 
             products = list(df_numeric.columns)
             
-            # Run the ANOVA on the RAW, un-transformed data
             try:
                 model = ols('Score ~ C(Product) + C(Taster)', data=df_long).fit()
                 anova_table = sm.stats.anova_lm(model, typ=2)
@@ -1246,13 +1399,10 @@ elif tool == "Hedonic Analyzer":
                 st.error("An error occurred during ANOVA execution. Please check your data formatting.")
                 st.stop()
             
-            # --- ACTION STANDARD (DETECTABLE DIFFERENCE) CALCULATION ---
-            # Using 80% power, 95% confidence
-            z_alpha = norm.ppf(1 - 0.10 / 2) # approx 1.96
-            z_beta = norm.ppf(0.80)          # approx 0.84
+            z_alpha = norm.ppf(1 - 0.10 / 2) 
+            z_beta = norm.ppf(0.80)          
             evals_per_product = len(df_long) / len(products)
             
-            # Extract residual standard error from the ANOVA model
             residual_std = np.sqrt(model.mse_resid) if hasattr(model, 'mse_resid') else df_long['Score'].std()
             action_standard = (z_alpha + z_beta) * residual_std * np.sqrt(2 / evals_per_product)
             
@@ -1357,7 +1507,7 @@ elif tool == "Hedonic Analyzer":
                     r_error_msg = ""
                     used_fallback = False
                     
-                    df_rank = df_long.copy() # Uses the mathematically pure raw data for rank conversion
+                    df_rank = df_long.copy() 
                     df_rank['Taster'] = df_rank['Taster'].astype(str).str.strip()
                     df_rank['Product'] = df_rank['Product'].astype(str).str.strip()
                     
@@ -1368,9 +1518,16 @@ elif tool == "Hedonic Analyzer":
                         r_sm_script = f"""
                         options(warn=-1)
                         {R_LIB_CMD}
-                        library(PMCMRplus)
+                        
+                        local_lib <- Sys.getenv("R_LIBS_USER")
+                        dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
+                        .libPaths(c(local_lib, .libPaths()))
 
-                        # row.names=1 skips the 'Taster' column so matrix is purely numeric
+                        if (!require("PMCMRplus", character.only = TRUE, quietly = TRUE)) {{
+                            install.packages("PMCMRplus", repos="https://cloud.r-project.org/", lib=local_lib, quiet=TRUE)
+                            library(PMCMRplus, lib.loc=local_lib)
+                        }}
+
                         df <- read.csv("temp_sm.csv", row.names=1)
                         mat <- as.matrix(df)
                         
@@ -1387,7 +1544,7 @@ elif tool == "Hedonic Analyzer":
                         with open("run_sm.R", "w") as f:
                             f.write(r_sm_script)
                             
-                        result = subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=120)
+                        result = subprocess.run(["Rscript", "run_sm.R"], capture_output=True, text=True, check=True, timeout=300)
                         
                         if os.path.exists("temp_sm_pval.txt"):
                             with open("temp_sm_pval.txt", "r") as f:
@@ -1575,7 +1732,7 @@ elif tool == "Hedonic Analyzer":
                 display_df = adj_df[['Product', 'Tier', 'Adjusted Score']].round(2)
                 st.dataframe(display_df, hide_index=True)
 
-# ==========================================
+            # ==========================================
             # ACTION STANDARD SUMMARY (DETECTABLE DIFFERENCE)
             # ==========================================
             st.divider()
@@ -1688,7 +1845,6 @@ elif tool == "Hedonic Analyzer":
                         
                         col_dial, col_warn = st.columns([1, 2])
                         
-                        # THE FIX: Add '1' to the options list for the Magic Dial
                         dial_options = [1] + list(K_range)
                         default_idx = dial_options.index(best_k) if best_k in dial_options else 0
                         
@@ -1701,7 +1857,6 @@ elif tool == "Hedonic Analyzer":
                         with col_warn:
                             st.info(f"**Note:** Math says **{best_k}** is optimal for clear data separation, but you can adjust this if a different grouping is simpler to explain in your report.")
                             
-                        # THE FIX: Bypass KMeans if the user selects 1 profile
                         if selected_k == 1:
                             labels = np.zeros(len(data_matrix), dtype=int)
                         else:
@@ -1713,7 +1868,6 @@ elif tool == "Hedonic Analyzer":
                         profile_names = {}
                         for l, c in zip(unique, counts):
                             pct = (c / total_tasters) * 100
-                            # Clean up the name if it's just 1 profile
                             profile_names[l] = "Entire Panel (100.0%)" if selected_k == 1 else f"Profile {l+1} ({pct:.1f}%)"
                             
                         cluster_df['Taste Profile'] = [profile_names[l] for l in labels]
@@ -1739,47 +1893,34 @@ elif tool == "Hedonic Analyzer":
                         st.subheader("The 'Taste Tribe' Heatmap")
                         st.markdown("This chart plots every single vote from the panel. The products (columns) are sorted left-to-right by their ultimate rank. The tasters (rows) have been mathematically reorganized and grouped by their Taste Profile. Look for massive blocks of solid color to see exactly where the tribes agreed or went to war over specific ice creams.")
                         
-                        # THE FIX: Add a toggle to show/hide the inferred scores
                         show_imputed = st.checkbox("Mark mathematically inferred scores with an asterisk (*)", value=True)
                         
-                        # Sort the dataframe so tasters in the same profile are grouped together visually
                         heatmap_data = cluster_df.copy()
                         
-                        # THE FIX: Force Python to treat the Taster IDs as integers so they sort 1, 2, 10 instead of 1, 10, 2
                         heatmap_data['Taster_Num'] = pd.to_numeric(heatmap_data.index, errors='coerce')
                         heatmap_data = heatmap_data.sort_values(by=['Taste Profile', 'Taster_Num'])
                         
-                        # Clean up Y-axis labels so they don't redundantly say "Profile 1" if K=1
                         if selected_k == 1:
                             y_labels = [f"Taster {idx}" for idx, row in heatmap_data.iterrows()]
                         else:
                             y_labels = [f"Taster {idx} ({row['Taste Profile']})" for idx, row in heatmap_data.iterrows()]
                         
-                        # Drop the string and sorting columns
                         heatmap_numeric = heatmap_data.drop(columns=['Taste Profile', 'Taster_Num'])
                         
-                        # Grab the final rank order and force the columns to match
                         rank_ordered_products = adj_df['Product'].tolist()
                         safe_ordered_cols = [p for p in rank_ordered_products if p in heatmap_numeric.columns]
                         heatmap_numeric = heatmap_numeric[safe_ordered_cols]
                         
-                        # THE FIX: Build the transparent overlay to mark the inferred scores
                         if show_imputed:
-                            # Safely grab the raw data with the missing NaNs intact
                             raw_for_heatmap = df_numeric_raw.copy()
                             raw_for_heatmap.index = df['Taster']
-                            # Align it perfectly with our newly sorted heatmap
                             raw_aligned = raw_for_heatmap.reindex(index=heatmap_numeric.index, columns=heatmap_numeric.columns)
-                            # Create an array of asterisks wherever the raw data was blank
                             annot_labels = np.where(raw_aligned.isna(), "*", "")
                         else:
-                            # Give it a blank overlay if the toggle is off
                             annot_labels = np.full(heatmap_numeric.shape, "")
                         
                         fig_heat, ax_heat = plt.subplots(figsize=(10, 8))
                         
-                        # Draw the heatmap (RdBu_r: Red = High Score/Hot, Blue = Low Score/Cold)
-                        # Notice we pass `annot=annot_labels` to draw our asterisks
                         sns.heatmap(heatmap_numeric, cmap="RdBu_r", center=5, vmin=1, vmax=9, 
                                     yticklabels=y_labels, cbar_kws={'label': 'Score (1 = Dislike, 9 = Like)'}, 
                                     annot=annot_labels, fmt="", annot_kws={'size': 18, 'va': 'center'}, ax=ax_heat)
@@ -1789,9 +1930,7 @@ elif tool == "Hedonic Analyzer":
                         plt.setp(ax_heat.get_xticklabels(), rotation=45, ha='right')
                         fig_heat.tight_layout()
                         st.pyplot(fig_heat)
-                        # ==========================================
-                        # END NEW HEATMAP CODE
-                        # ==========================================
+                        
                         # ==========================================
                         # MAGAZINE-STYLE VISUALIZATIONS
                         # ==========================================
@@ -1804,13 +1943,12 @@ elif tool == "Hedonic Analyzer":
                             show_ridge = st.checkbox("Ridge Plot (Joyplot)")
                         with col_chk2:
                             show_slope = st.checkbox("The Great Divide (Slopegraph)")
-                        show_pca = False # Disabled for Hedonic Data due to incomplete block invalidity
+                        show_pca = False 
                         
                         if show_ridge:
                             st.markdown("#### 1. The Ridge Plot")
                             st.markdown("Look for tall, skinny peaks (consensus) vs. wide double-peaks (highly polarizing).")
                             
-                            # Reverse order so the winner is at the top of the chart
                             ranked_prods = adj_df['Product'].tolist()[::-1] 
                             fig_ridge, axes_ridge = plt.subplots(len(ranked_prods), 1, figsize=(10, 0.8 * len(ranked_prods)), sharex=True, gridspec_kw={'hspace': -0.4})
                             
@@ -1827,7 +1965,7 @@ elif tool == "Hedonic Analyzer":
                                 axes_ridge[i].spines['top'].set_visible(False)
                                 axes_ridge[i].spines['right'].set_visible(False)
                                 axes_ridge[i].spines['left'].set_visible(False)
-                                axes_ridge[i].patch.set_alpha(0) # Makes the overlapping transparent
+                                axes_ridge[i].patch.set_alpha(0) 
                             
                             axes_ridge[-1].set_xlabel("Score (1 to 9)")
                             st.pyplot(fig_ridge)
@@ -1838,11 +1976,9 @@ elif tool == "Hedonic Analyzer":
                                 profiles = cluster_df['Taste Profile'].unique()[:2]
                                 p1_name, p2_name = profiles[0], profiles[1]
                                 
-                                # Calculate average scores per profile, then rank them 1 to 10
                                 p1_scores = cluster_df[cluster_df['Taste Profile'] == p1_name].drop(columns=['Taste Profile', 'Taster_Num'], errors='ignore').mean(numeric_only=True)
                                 p2_scores = cluster_df[cluster_df['Taste Profile'] == p2_name].drop(columns=['Taste Profile', 'Taster_Num'], errors='ignore').mean(numeric_only=True)
                                 
-                                # THE FIX: Calculate the "Real" rank for the text labels, and a "Plot" rank to prevent overlapping
                                 p1_ranks_real = p1_scores.rank(ascending=False, method='min')
                                 p2_ranks_real = p2_scores.rank(ascending=False, method='min')
                                 
@@ -1858,17 +1994,14 @@ elif tool == "Hedonic Analyzer":
                                     r1_plot = p1_ranks_plot[prod]
                                     r2_plot = p2_ranks_plot[prod]
                                     
-                                    # Color logic: Red = Polarizing, Green = Agreement, Gray = Minor shift
                                     color = "gray"
                                     if abs(r1_real - r2_real) >= 4:
                                         color = "#d62728" 
                                     elif r1_real == r2_real:
                                         color = "#2ca02c" 
                                         
-                                    # Plot lines using the unique Y-coordinates
                                     ax_slope.plot([1, 2], [r1_plot, r2_plot], marker='o', color=color, linewidth=2, markersize=8)
                                     
-                                    # Print text using the real rank numbers
                                     if r1_real == r2_real:
                                         ax_slope.text(0.95, r1_plot, prod, ha='right', va='center', fontsize=10)
                                         ax_slope.text(2.05, r2_plot, prod, ha='left', va='center', fontsize=10)
@@ -1896,9 +2029,8 @@ elif tool == "Hedonic Analyzer":
                             
                             from sklearn.decomposition import PCA
                             
-                            # Safely build the data map directly from df_long
                             pca_pivot = df_long.pivot_table(index='Product', columns='Taster', values='Score', aggfunc='mean')
-                            pca_data = pca_pivot.fillna(pca_pivot.median(axis=1)).fillna(5) # Fill blanks neutrally
+                            pca_data = pca_pivot.fillna(pca_pivot.median(axis=1)).fillna(5) 
                             
                             if len(pca_data) >= 3:
                                 pca = PCA(n_components=2)
@@ -1907,7 +2039,6 @@ elif tool == "Hedonic Analyzer":
                                 fig_pca, ax_pca = plt.subplots(figsize=(10, 7))
                                 ax_pca.scatter(coords[:, 0], coords[:, 1], s=150, color='#ff7f0e', edgecolor='black', zorder=3)
                                 
-                                # Annotate the dots with product names
                                 for i, txt in enumerate(pca_data.index):
                                     ax_pca.annotate(txt, (coords[i, 0], coords[i, 1]), xytext=(8, 8), 
                                                     textcoords='offset points', fontsize=11, fontweight='bold',
@@ -1921,9 +2052,6 @@ elif tool == "Hedonic Analyzer":
                                 st.pyplot(fig_pca)
                             else:
                                 st.warning("Not enough products to build a flavor map.")
-                        # ==========================================
-                        # END MAGAZINE VISUALIZATIONS
-                        # ==========================================
 
                         if len(K_range) > 1:
                             with st.expander("Advanced Clustering Diagnostics"):
@@ -1964,30 +2092,20 @@ elif tool == "Hedonic Analyzer":
                                 
                                 rank_ordered_products = adj_df['Product'].tolist()
                                 
-                                # Build the pivot table directly from the clean df_plot_long
                                 ordered_pivot = df_plot_long.pivot_table(index='Taster', columns='Product', values='Score', aggfunc='mean')
-                                
-                                # Reorder columns to match the final ranking
                                 ordered_pivot = ordered_pivot[rank_ordered_products]
-                                
-                                # Transpose to make Products the X-axis and Tasters the lines
                                 df_spag = ordered_pivot.T
                                 
                                 fig_spag, ax_spag = plt.subplots(figsize=(10, 6))
-                                
-                                # THE FIX: Convert the Pandas Index (Ice Cream Names) to a raw Numpy array
                                 x_axis_vals = df_spag.index.to_numpy()
                                 
-                                # Plot every taster line in light gray
                                 for column in df_spag.columns:
-                                    y_vals = df_spag[column].to_numpy() # THE FIX: Convert to raw Numpy array
+                                    y_vals = df_spag[column].to_numpy() 
                                     ax_spag.plot(x_axis_vals, y_vals, color='gray', alpha=0.3, linewidth=1)
                                 
-                                # Plot the overall Median in bold black
                                 median_line = ordered_pivot.median()
                                 ax_spag.plot(x_axis_vals, median_line.to_numpy(), color='black', linewidth=3.5, label='Panel Median (The consensus)')
                                 
-                                # Plot the best taster in green (most consistent)
                                 correlations = ordered_pivot.apply(lambda row: row.corr(median_line), axis=1)
                                 try:
                                     best_index_pos = correlations.argmax()
@@ -2034,7 +2152,6 @@ elif tool == "Hedonic Analyzer":
                 
                 sns.scatterplot(x=predicted, y=actual, alpha=0.7, color='#1f77b4', s=70, edgecolor='black', ax=ax_qc)
                 
-                # Diagonal line
                 min_val = min(predicted.min(), actual.min()) - 0.5
                 max_val = max(predicted.max(), actual.max()) + 0.5
                 ax_qc.plot([min_val, max_val], [min_val, max_val], color='red', linestyle='--', alpha=0.6, label='Perfect Consistency')
@@ -2063,7 +2180,6 @@ elif tool == "Hedonic Analyzer":
                 lambda x: "Very Harsh" if x <= -1.5 else ("Harsh" if x < -0.5 else ("Generous" if x > 0.5 else ("Very Generous" if x >= 1.5 else "Average")))
             )
             
-            taster_df['Taster ID'] = pd.to_numeric(taster_df['Taster ID'], errors='ignore')
             st.dataframe(taster_df.sort_values('Deviation from Panel'), hide_index=True)
 
             if apply_zscore and transformed_df_display is not None:
@@ -2090,7 +2206,6 @@ elif tool == "Descriptive Analyzer":
         if st.button("Clear Profiler Data"):
             clear_state_keys(['desc_sim_df'])
 
-    # Safely load advanced mathematical libraries
     try:
         import statsmodels.api as sm
         import statsmodels.formula.api as smf
@@ -2103,7 +2218,6 @@ elif tool == "Descriptive Analyzer":
 
     df_desc = None
     
-    # Catch the baton from the Survey Decoder
     if st.session_state.get('desc_sim_df') is not None:
         st.success("✅ **Successfully loaded descriptive data matrix from the Survey Decoder.**")
         df_desc = st.session_state.desc_sim_df.copy()
@@ -2121,13 +2235,11 @@ elif tool == "Descriptive Analyzer":
         st.divider()
         st.subheader("1. Map Survey Columns & Settings")
         
-        # Z-Score Toggle
         apply_zscore = st.checkbox("Standardize data using Z-scores before plotting (Neutralizes taster harshness/generosity for cleaner charts)", value=True)
         st.write("")
 
         cols = list(df_desc.columns)
         
-        # Smart guessing for Taster and Product columns
         taster_idx = next((i for i, c in enumerate(cols) if 'taster' in c.lower() or 'id' in c.lower() or 'panelist' in c.lower()), 0)
         prod_idx = next((i for i, c in enumerate(cols) if 'product' in c.lower() or 'brand' in c.lower() or 'sample' in c.lower()), 1 if len(cols)>1 else 0)
         
@@ -2142,7 +2254,6 @@ elif tool == "Descriptive Analyzer":
             liking_col = st.selectbox("Overall Liking Column (Optional)", liking_options, index=default_liking_idx)
             
         excluded = [prod_col, taster_col]
-        # We explicitly DO NOT exclude liking_col anymore, so it appears on all charts
             
         default_attrs = [c for c in cols if c not in excluded]
         attr_cols = st.multiselect("Select Descriptive Attributes", default_attrs, default=default_attrs)
@@ -2154,7 +2265,6 @@ elif tool == "Descriptive Analyzer":
             if st.session_state.get('desc_profiles_generated', False):
                 with st.spinner("Crunching automated ANOVAs and rendering PCA geometry..."):
                     
-                    # Clean data types
                     df_desc[prod_col] = df_desc[prod_col].astype(str).str.strip()
                     for c in attr_cols:
                         df_desc[c] = pd.to_numeric(df_desc[c], errors='coerce')
@@ -2224,14 +2334,12 @@ elif tool == "Descriptive Analyzer":
                                 
                             df_plot[attr] = df_plot.groupby(taster_col)[attr].transform(standardize_taster)
 
-                    # Calculate means and standard errors for the charts
                     prod_means = df_plot.groupby(prod_col)[attr_cols].mean()
                     prod_sems = df_plot.groupby(prod_col)[attr_cols].sem().fillna(0)
                     products_list = prod_means.index.tolist()
                     
                     if liking_col != "None (Do not map overall liking)":
                         overall_means = df_plot.groupby(prod_col)[liking_col].mean()
-                        # Sort products by overall liking
                         products_list = overall_means.sort_values(ascending=False).index.tolist()
                         prod_means = prod_means.reindex(products_list)
                         prod_sems = prod_sems.reindex(products_list)
@@ -2251,7 +2359,7 @@ elif tool == "Descriptive Analyzer":
                     st.dataframe(display_means.round(2))
                     
                     # ==========================================
-                    # NEW: MAGAZINE-STYLE ATTRIBUTE VS LIKING CHARTS
+                    # 4. MAGAZINE-STYLE ATTRIBUTE VS LIKING CHARTS
                     # ==========================================
                     if liking_col != "None (Do not map overall liking)":
                         st.divider()
@@ -2267,7 +2375,6 @@ elif tool == "Descriptive Analyzer":
                             st.markdown("#### The Attribute Battlefield (Bubble Matrix)")
                             st.markdown("Maps two specific descriptive attributes against Overall Liking. **Bubble Size and Color represent the Overall Liking score.** Look for patterns: does a massive green bubble still appear even when one attribute is rated poorly? That proves which attribute matters more to your tasters!")
                             
-                            # Give the user drop downs to pick their X and Y for the bubble matrix
                             b1, b2 = st.columns(2)
                             with b1:
                                 x_attr = st.selectbox("X-Axis Attribute", attr_cols, index=0)
@@ -2280,7 +2387,6 @@ elif tool == "Descriptive Analyzer":
                             y_vals = prod_means[y_attr]
                             sizes = overall_means.reindex(products_list)
                             
-                            # Normalize sizes for plotting
                             min_s = sizes.min()
                             max_s = sizes.max()
                             if max_s > min_s:
@@ -2315,7 +2421,6 @@ elif tool == "Descriptive Analyzer":
                             st.markdown("#### Ranked Attribute Breakdown")
                             st.markdown("Products are sorted top-to-bottom by Overall Liking. See exactly which descriptive attributes dragged down the losers or propelled the winners.")
                             
-                            # Limit to top 3 attributes if there are many, plus overall liking
                             display_attrs = attr_cols[:3]
                             
                             bar_df = prod_means[display_attrs].copy()
@@ -2323,7 +2428,6 @@ elif tool == "Descriptive Analyzer":
                             
                             fig_trip, ax_trip = plt.subplots(figsize=(10, len(products_list) * 0.8 + 1))
                             
-                            # Reverse order so winner is at top
                             bar_df = bar_df.iloc[::-1]
                             
                             bar_df.plot(kind='barh', ax=ax_trip, width=0.8, alpha=0.9, edgecolor='black')
@@ -2336,7 +2440,7 @@ elif tool == "Descriptive Analyzer":
                             st.pyplot(fig_trip)
 
                     # ==========================================
-                    # 4. BAR CHART WITH ERROR BARS
+                    # 5. BAR CHART WITH ERROR BARS
                     # ==========================================
                     st.divider()
                     st.subheader("Attribute Comparison (Grouped Bar Chart)")
@@ -2365,7 +2469,7 @@ elif tool == "Descriptive Analyzer":
                     st.pyplot(fig_bar)
 
                     # ==========================================
-                    # 5. OVERLAPPING RADAR CHART
+                    # 6. OVERLAPPING RADAR CHART
                     # ==========================================
                     st.divider()
                     st.subheader("Visual Profile (Radar Chart)")
@@ -2386,7 +2490,7 @@ elif tool == "Descriptive Analyzer":
                     st.pyplot(fig_radar)
                     
                     # ==========================================
-                    # 6. PCA SENSORY MAP
+                    # 7. PCA SENSORY MAP
                     # ==========================================
                     st.divider()
                     st.subheader("2D PCA Sensory Map")
